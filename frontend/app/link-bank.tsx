@@ -1,11 +1,12 @@
 import React, { useState } from "react";
 import {
   View, Text, StyleSheet, ScrollView, Pressable, TextInput,
-  KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard,
+  KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard, Linking,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
+import * as WebBrowser from "expo-web-browser";
 
 import { api } from "@/src/api";
 import Button from "@/src/components/Button";
@@ -18,7 +19,7 @@ const PROVIDERS: { key: Provider; name: string; sub: string; note: string }[] = 
     key: "revolut",
     name: "Revolut",
     sub: "Open Banking · sandbox",
-    note: "Paste a Revolut Business sandbox access token. Éva will pull transactions and run the tax engine.",
+    note: "Éva will open Revolut's secure login to connect your account. You'll authenticate inside Revolut, then return here automatically.",
   },
   {
     key: "spuerkeess",
@@ -38,15 +39,21 @@ export default function LinkBank() {
 
   const submit = async () => {
     setErr(null);
-    if (provider === "revolut" && token.trim().length < 4) {
-      setErr("Paste a Revolut sandbox access token.");
-      return;
-    }
     setSaving(true);
     try {
-      // Spuerkeess is stubbed — accept any non-empty token (or auto-fill).
-      const t = provider === "spuerkeess" && !token.trim() ? "stub-spuerkeess" : token.trim();
-      await api.linkBank(provider, t);
+      if (provider === "revolut") {
+        // OAuth flow — backend returns a consent_url, frontend opens it.
+        const res = await api.linkBank("revolut");
+        if (res.consent_url) {
+          // openAuthSessionAsync closes the in-app browser when it sees a URL
+          // that matches the second arg (our eva:// deep link). The backend's
+          // callback HTML redirects to eva://bank-callback?status=ok to trigger that.
+          await WebBrowser.openAuthSessionAsync(res.consent_url, "eva://bank-callback");
+        }
+      } else {
+        // Spuerkeess is server-stubbed — accept any reference label.
+        await api.linkBank("spuerkeess", token.trim() || "stub");
+      }
       router.back();
     } catch (e: any) {
       setErr(e.message || "Could not link account.");
@@ -56,6 +63,7 @@ export default function LinkBank() {
   };
 
   const active = PROVIDERS.find((p) => p.key === provider)!;
+  const isRevolut = provider === "revolut";
 
   return (
     <KeyboardAvoidingView
@@ -106,20 +114,33 @@ export default function LinkBank() {
             </View>
           </View>
 
-          <View>
-            <Text style={styles.label}>{provider === "revolut" ? "Access token" : "Reference (optional)"}</Text>
-            <TextInput
-              value={token}
-              onChangeText={setToken}
-              placeholder={provider === "revolut" ? "eyJ... or rvlt_sandbox_..." : "Any reference label"}
-              placeholderTextColor={colors.muted}
-              autoCapitalize="none"
-              autoCorrect={false}
-              secureTextEntry={provider === "revolut"}
-              style={styles.input}
-              testID="link-bank-token"
-            />
-          </View>
+          {isRevolut ? (
+            <View style={styles.explainCard} testID="revolut-explain">
+              <View style={styles.explainIcon}>
+                <Feather name="shield" size={20} color={colors.onSurface} />
+              </View>
+              <Text style={styles.explainTitle}>Secure Revolut login</Text>
+              <Text style={styles.explainBody}>
+                Tap Connect to open Revolut's secure login. Sign in with your sandbox test account
+                — phone <Text style={styles.explainMono}>+447287118290</Text>,
+                passcode <Text style={styles.explainMono}>0000</Text>. Éva never sees your password.
+              </Text>
+            </View>
+          ) : (
+            <View>
+              <Text style={styles.label}>Reference (optional)</Text>
+              <TextInput
+                value={token}
+                onChangeText={setToken}
+                placeholder="Any reference label"
+                placeholderTextColor={colors.muted}
+                autoCapitalize="none"
+                autoCorrect={false}
+                style={styles.input}
+                testID="link-bank-token"
+              />
+            </View>
+          )}
 
           <View style={styles.note}>
             <Feather name="info" size={16} color={colors.onSurfaceSecondary} />
@@ -131,7 +152,7 @@ export default function LinkBank() {
       </TouchableWithoutFeedback>
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.md }]}>
-        <Button title="Connect" onPress={submit} loading={saving} testID="link-bank-submit" />
+        <Button title={isRevolut ? "Connect with Revolut" : "Connect"} onPress={submit} loading={saving} testID="link-bank-submit" />
       </View>
     </KeyboardAvoidingView>
   );
@@ -156,6 +177,12 @@ const styles = StyleSheet.create({
   providerName: { fontFamily: fonts.bodyMedium, fontSize: type.lg, color: colors.onSurface },
   providerNameActive: { fontFamily: fonts.displayBold },
   providerSub: { fontFamily: fonts.body, fontSize: type.sm, color: colors.onSurfaceSecondary, marginTop: 2 },
+
+  explainCard: { padding: spacing.lg, borderRadius: radius.lg, backgroundColor: colors.brandTertiary, gap: spacing.sm },
+  explainIcon: { width: 36, height: 36, borderRadius: radius.pill, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center" },
+  explainTitle: { fontFamily: fonts.displayBold, fontSize: type.xl, color: colors.onSurface },
+  explainBody: { fontFamily: fonts.body, fontSize: type.base, color: colors.onSurfaceSecondary, lineHeight: 20 },
+  explainMono: { fontFamily: fonts.bodyBold, color: colors.onSurface },
 
   input: { height: 52, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, paddingHorizontal: spacing.lg, fontFamily: fonts.body, fontSize: type.lg, color: colors.onSurface },
 

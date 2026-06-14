@@ -7,6 +7,7 @@ const ICONS: Record<string, keyof typeof Feather.glyphMap> = {
   index: "home",
   buckets: "target",
   insights: "bar-chart-2",
+  settings: "sliders",
   profile: "user",
 };
 
@@ -40,6 +41,7 @@ export default function TabsLayout() {
       <Tabs.Screen name="index" options={{ title: "Home" }} />
       <Tabs.Screen name="buckets" options={{ title: "Goals" }} />
       <Tabs.Screen name="insights" options={{ title: "Insights" }} />
+      <Tabs.Screen name="settings" options={{ title: "Settings" }} />
       <Tabs.Screen name="profile" options={{ title: "Profile" }} />
     </Tabs>
   );

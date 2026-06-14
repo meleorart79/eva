@@ -15,6 +15,14 @@ const PROVIDER_LABEL: Record<string, string> = {
   spuerkeess: "Spuerkeess",
 };
 
+const PROFILE_LABEL: Record<string, string> = {
+  balanced: "Balanced mode",
+  aggressive: "Aggressive mode",
+  ethical: "Ethical mode",
+  mindful: "Mindful mode",
+  savings_beast: "Savings Beast mode",
+};
+
 export default function Dashboard() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -127,6 +135,11 @@ export default function Dashboard() {
             <View style={styles.heroCard} testID="hero-saved">
               <Text style={styles.heroLabel}>Total auto-saved</Text>
               <Text style={styles.heroAmount}>{fmt(summary?.total_taxed ?? 0, ccy)}</Text>
+              {summary?.profile_type ? (
+                <Text style={styles.heroProfile} testID="hero-profile-mode">
+                  {PROFILE_LABEL[summary.profile_type] ?? `${summary.profile_type} mode`}
+                </Text>
+              ) : null}
               <View style={styles.heroRow}>
                 <View style={styles.heroMini}>
                   <Text style={styles.heroMiniLabel}>Spent</Text>
@@ -276,6 +289,13 @@ export default function Dashboard() {
                             a.status === "unmatched" ? "Unmatched" : "Pending"}
                         </Text>
                       </View>
+                      {a.profile_applied && a.profile_applied !== "balanced" ? (
+                        <View style={styles.profileBadge} testID={`act-profile-${a.raw_txn_id}`}>
+                          <Text style={styles.profileBadgeText}>
+                            {PROFILE_LABEL[a.profile_applied]?.replace(" mode", "") ?? a.profile_applied}
+                          </Text>
+                        </View>
+                      ) : null}
                     </View>
                     <View style={{ alignItems: "flex-end", gap: spacing.xs }}>
                       <Text style={styles.actAmount}>-{fmt(a.amount, ccy)}</Text>
@@ -322,6 +342,7 @@ const styles = StyleSheet.create({
   heroCard: { backgroundColor: colors.brandTertiary, borderRadius: radius.lg, padding: spacing.xl, gap: spacing.md },
   heroLabel: { fontFamily: fonts.bodyMedium, fontSize: type.sm, color: colors.onSurfaceSecondary, letterSpacing: 0.4, textTransform: "uppercase" },
   heroAmount: { fontFamily: fonts.displayBold, fontSize: 44, color: colors.onSurface, lineHeight: 50 },
+  heroProfile: { fontFamily: fonts.bodyMedium, fontSize: type.sm, color: colors.onSurfaceSecondary, letterSpacing: 0.4, marginTop: -spacing.xs },
   heroRow: { flexDirection: "row", alignItems: "center", marginTop: spacing.sm },
   heroMini: { flex: 1 },
   heroMiniLabel: { fontFamily: fonts.body, fontSize: type.sm, color: colors.onSurfaceSecondary },
@@ -378,6 +399,9 @@ const styles = StyleSheet.create({
   status_overridden: { backgroundColor: colors.surfaceTertiary },
   status_unmatched: { backgroundColor: colors.surfaceTertiary },
   status_pending: { backgroundColor: colors.surfaceTertiary },
+
+  profileBadge: { alignSelf: "flex-start", paddingHorizontal: spacing.sm, paddingVertical: 2, borderRadius: radius.pill, marginTop: 4, backgroundColor: colors.surfaceInverse },
+  profileBadgeText: { fontFamily: fonts.bodyMedium, fontSize: 10, color: colors.onSurfaceInverse, letterSpacing: 0.3 },
 
   overrideBtn: { paddingHorizontal: spacing.md, height: 30, borderRadius: radius.pill, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center" },
   overrideText: { fontFamily: fonts.bodyMedium, fontSize: type.sm, color: colors.onSurface },

@@ -36,6 +36,13 @@ export type LinkedAccount = {
   provider: "revolut" | "spuerkeess";
   is_active: boolean;
   linked_at: string;
+  consent_url?: string | null;
+};
+
+export type Settings = {
+  profile_type: "balanced" | "aggressive" | "ethical" | "mindful" | "savings_beast";
+  transfer_frequency: "instant" | "daily" | "weekly";
+  pause_all_taxes: boolean;
 };
 
 export type ActivityRow = {
@@ -53,6 +60,7 @@ export type ActivityRow = {
   status: "saved" | "skipped" | "overridden" | "unmatched" | "pending";
   created_at?: string | null;
   can_override: boolean;
+  profile_applied?: string | null;
 };
 
 export type Summary = {
@@ -62,6 +70,7 @@ export type Summary = {
   by_category: { name: string; spent: number; taxed: number; count: number }[];
   by_day: { date: string; spent: number; taxed: number }[];
   streak_days_no_impulse: number;
+  profile_type: string;
 };
 
 export async function getToken(): Promise<string | null> {
@@ -128,12 +137,22 @@ export const api = {
   deleteBucket: (id: string) => req<{ ok: boolean }>(`/buckets/${id}`, { method: "DELETE" }),
 
   // Bank linking
-  linkBank: (provider: "revolut" | "spuerkeess", access_token: string) =>
-    req<LinkedAccount>("/bank/link", { method: "POST", body: JSON.stringify({ provider, access_token }) }),
+  linkBank: (provider: "revolut" | "spuerkeess", access_token?: string) =>
+    req<LinkedAccount>("/bank/link", {
+      method: "POST",
+      body: JSON.stringify(
+        access_token ? { provider, access_token } : { provider },
+      ),
+    }),
   listAccounts: () => req<LinkedAccount[]>("/bank/accounts"),
   unlinkBank: (id: string) => req<{ ok: boolean }>(`/bank/accounts/${id}`, { method: "DELETE" }),
   syncBank: () =>
     req<{ ingested: number; duplicates: number; accounts: number }>(`/bank/sync`, { method: "POST" }),
+
+  // Settings
+  getSettings: () => req<Settings>("/settings"),
+  patchSettings: (data: Partial<Settings>) =>
+    req<Settings>("/settings", { method: "PATCH", body: JSON.stringify(data) }),
 
   // Tax engine
   processTax: () =>
