@@ -43,6 +43,43 @@ export type Settings = {
   profile_type: "balanced" | "aggressive" | "ethical" | "mindful" | "savings_beast";
   transfer_frequency: "instant" | "daily" | "weekly";
   pause_all_taxes: boolean;
+  transfer_last_run_at?: string | null;
+};
+
+export type SavingsDestination = {
+  id: string;
+  type: "external_iban" | "revolut_pocket";
+  label: string;
+  identifier: string;
+  currency: string;
+  is_default: boolean;
+  is_active: boolean;
+  created_at: string;
+};
+
+export type MonthlyReport = {
+  year: number;
+  month: number;
+  totals: { spent: number; taxed: number; events: number; overridden: number; requires_review: number };
+  by_category: { name: string; taxed: number }[];
+  by_profile: { name: string; taxed: number }[];
+  by_destination: { label: string; taxed: number }[];
+  by_transfer_status: { status: string; count: number }[];
+  events: {
+    transacted_at: string;
+    merchant: string;
+    category?: string;
+    original_amount: number;
+    currency: string;
+    profile?: string;
+    tax_rate: number;
+    tax_amount: number;
+    source_label?: string;
+    destination_label?: string;
+    transfer_status?: string;
+    transfer_provider_ref?: string;
+    status?: string;
+  }[];
 };
 
 export type ActivityRow = {
@@ -61,6 +98,16 @@ export type ActivityRow = {
   created_at?: string | null;
   can_override: boolean;
   profile_applied?: string | null;
+  source_account_id?: string | null;
+  source_label?: string | null;
+  source_type?: string | null;
+  source_currency?: string | null;
+  destination_id?: string | null;
+  destination_label?: string | null;
+  destination_currency?: string | null;
+  transfer_status?: "pending" | "executed" | "failed" | "requires_review" | null;
+  transfer_provider_ref?: string | null;
+  requires_review?: boolean;
 };
 
 export type Summary = {
@@ -153,6 +200,21 @@ export const api = {
   getSettings: () => req<Settings>("/settings"),
   patchSettings: (data: Partial<Settings>) =>
     req<Settings>("/settings", { method: "PATCH", body: JSON.stringify(data) }),
+
+  // Savings destinations
+  listDestinations: () => req<SavingsDestination[]>("/destinations"),
+  createDestination: (data: Omit<SavingsDestination, "id" | "is_active" | "created_at">) =>
+    req<SavingsDestination>("/destinations", { method: "POST", body: JSON.stringify(data) }),
+  updateDestination: (id: string, data: Omit<SavingsDestination, "id" | "is_active" | "created_at">) =>
+    req<SavingsDestination>(`/destinations/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  deleteDestination: (id: string) => req<{ ok: boolean }>(`/destinations/${id}`, { method: "DELETE" }),
+
+  // Scheduler + monthly resume
+  runScheduler: () => req<{ ok: boolean; transfers: unknown[] }>("/scheduler/run", { method: "POST" }),
+  monthlyReport: (year: number, month: number) =>
+    req<MonthlyReport>(`/reports/monthly?year=${year}&month=${month}`),
+  monthlyReportCsvUrl: (year: number, month: number) =>
+    `${BASE}/api/reports/monthly/export.csv?year=${year}&month=${month}`,
 
   // Tax engine
   processTax: () =>

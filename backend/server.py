@@ -1,5 +1,8 @@
 import os
+import io
+import csv
 import uuid
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -7,8 +10,8 @@ from typing import List, Optional, Literal
 from urllib.parse import urlencode
 
 import requests
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.concurrency import run_in_threadpool
@@ -28,17 +31,19 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30
 OVERRIDE_WINDOW_MINUTES = 10
 
-# Revolut Open Banking personal sandbox.
 REVOLUT_CLIENT_ID = os.getenv("REVOLUT_CLIENT_ID", "05f4b015-b95a-423b-a7c8-c4e33c17b97d")
 REVOLUT_AUTH_URL = "https://sandbox-oba.revolut.com/ui/index.html"
 REVOLUT_TOKEN_URL = "https://sandbox-oba.revolut.com/token"
 REVOLUT_API_BASE = "https://sandbox-oba.revolut.com"
-REVOLUT_REDIRECT_FALLBACK = os.getenv("REVOLUT_REDIRECT_URI", "")  # optional override
+REVOLUT_REDIRECT_FALLBACK = os.getenv("REVOLUT_REDIRECT_URI", "")
 
-# Behavioral profiles.
 PROFILES = ("balanced", "aggressive", "ethical", "mindful", "savings_beast")
 ETHICAL_PENALTY_CATS = {"Fast Food", "Clothes", "Entertainment", "Ethical Penalty"}
 SAVINGS_BEAST_TRIGGER_AMOUNT = 5.00
+
+DEST_TYPES = ("external_iban", "revolut_pocket")
+FREQUENCIES = ("instant", "daily", "weekly")
+TRANSFER_STATUSES = ("pending", "executed", "failed", "requires_review")
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -109,8 +114,6 @@ class BucketOut(BaseModel):
 
 class LinkedAccountIn(BaseModel):
     provider: Literal["revolut", "spuerkeess"]
-    # Optional: legacy/direct-token mode (Spuerkeess always; Revolut tests).
-    # When omitted for Revolut, we initiate the OAuth consent flow instead.
     access_token: Optional[str] = None
 
 
@@ -119,8 +122,27 @@ class LinkedAccountOut(BaseModel):
     provider: str
     is_active: bool
     linked_at: datetime
-    # Present only for fresh Revolut OAuth links — frontend opens this URL in a WebView.
+    connected_at: Optional[datetime] = None
     consent_url: Optional[str] = None
+
+
+class SavingsDestinationIn(BaseModel):
+    type: Literal["external_iban", "revolut_pocket"]
+    label: str = Field(min_length=1, max_length=80)
+    identifier: str = Field(min_length=1, max_length=64)
+    currency: Literal["EUR", "USD", "GBP"]
+    is_default: bool = False
+
+
+class SavingsDestinationOut(BaseModel):
+    id: str
+    type: str
+    label: str
+    identifier: str
+    currency: str
+    is_default: bool
+    is_active: bool
+    created_at: datetime
 
 
 class ActivityRow(BaseModel):
@@ -139,6 +161,17 @@ class ActivityRow(BaseModel):
     created_at: Optional[datetime] = None
     can_override: bool = False
     profile_applied: Optional[str] = None
+    # Source / destination / transfer
+    source_account_id: Optional[str] = None
+    source_label: Optional[str] = None
+    source_type: Optional[str] = None
+    source_currency: Optional[str] = None
+    destination_id: Optional[str] = None
+    destination_label: Optional[str] = None
+    destination_currency: Optional[str] = None
+    transfer_status: Optional[str] = None
+    transfer_provider_ref: Optional[str] = None
+    requires_review: bool = False
 
 
 class SettingsIn(BaseModel):
@@ -151,6 +184,7 @@ class SettingsOut(BaseModel):
     profile_type: str
     transfer_frequency: str
     pause_all_taxes: bool
+    transfer_last_run_at: Optional[datetime] = None
 
 
 # ---------- Helpers ----------
@@ -213,11 +247,23 @@ def to_bucket_out(b: dict) -> BucketOut:
     )
 
 
+def to_dest_out(d: dict) -> SavingsDestinationOut:
+    return SavingsDestinationOut(
+        id=d["id"], type=d["type"], label=d["label"],
+        identifier=d["identifier"], currency=d["currency"],
+        is_default=bool(d.get("is_default", False)),
+        is_active=bool(d.get("is_active", True)),
+        created_at=ensure_aware(d["created_at"]),
+    )
+
+
 def to_settings_out(u: dict) -> SettingsOut:
+    last = u.get("transfer_last_run_at")
     return SettingsOut(
         profile_type=u.get("profile_type", "balanced"),
         transfer_frequency=u.get("transfer_frequency", "instant"),
         pause_all_taxes=bool(u.get("pause_all_taxes", False)),
+        transfer_last_run_at=ensure_aware(last) if last else None,
     )
 
 
@@ -245,7 +291,6 @@ DEFAULT_CATEGORIES = [
     {"name": "Other", "icon": "tag", "tax_rate": 0.10,
      "merchant_keywords": [],
      "rep_increment": 0.05, "max_tax_rate": 0.50, "daily_cap_amount": 10.0},
-    # Ethical-profile target category; matched only when ethical-profile keywords appear in merchant.
     {"name": "Ethical Penalty", "icon": "alert-triangle", "tax_rate": 0.35,
      "merchant_keywords": ["amazon", "mcdonalds", "kfc", "primark", "h&m",
                            "coca-cola", "pepsi", "nestlé", "monsanto", "shein"],
@@ -253,7 +298,8 @@ DEFAULT_CATEGORIES = [
 ]
 
 
-async def seed_user_defaults(user_id: str) -> str:
+async def seed_user_defaults(user_id: str, currency: str) -> str:
+    now = datetime.now(timezone.utc)
     for c in DEFAULT_CATEGORIES:
         await db.categories.insert_one({"id": str(uuid.uuid4()), "user_id": user_id, **c})
     bucket_id = str(uuid.uuid4())
@@ -261,13 +307,24 @@ async def seed_user_defaults(user_id: str) -> str:
         "id": bucket_id, "user_id": user_id,
         "name": "Travel Fund", "target_amount": 2000.0,
         "saved_amount": 0.0, "image_key": "travel", "is_default": True,
-        "created_at": datetime.now(timezone.utc),
+        "created_at": now,
+    })
+    # Seed a default Revolut-style savings pocket so the transfer loop works
+    # out of the box. User can replace with their own destination from Settings.
+    await db.savings_destinations.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "type": "revolut_pocket",
+        "label": "Default Savings Pocket",
+        "identifier": f"pocket_{user_id[:8]}",
+        "currency": currency,
+        "is_default": True, "is_active": True,
+        "created_at": now,
     })
     return bucket_id
 
 
 def apply_profile_multiplier(rate: float, cat_name: str, profile: str, max_rate: float) -> float:
-    """Apply the behavioral profile multiplier on top of the (already rep-adjusted) rate."""
     if profile == "aggressive" or profile == "savings_beast":
         rate = rate * 1.5
     elif profile == "ethical":
@@ -275,7 +332,6 @@ def apply_profile_multiplier(rate: float, cat_name: str, profile: str, max_rate:
             rate = rate * 1.4
     elif profile == "mindful":
         rate = rate * 0.5
-    # balanced -> no change
     return min(max_rate, rate)
 
 
@@ -291,7 +347,7 @@ async def register(data: UserCreate):
     if await db.users.find_one({"email": email}):
         raise HTTPException(400, "Email already registered")
     uid = str(uuid.uuid4())
-    bucket_id = await seed_user_defaults(uid)
+    bucket_id = await seed_user_defaults(uid, data.currency)
     user_doc = {
         "id": uid, "email": email, "name": data.name,
         "password_hash": hash_password(data.password),
@@ -299,6 +355,7 @@ async def register(data: UserCreate):
         "profile_type": "balanced",
         "transfer_frequency": "instant",
         "pause_all_taxes": False,
+        "transfer_last_run_at": None,
         "created_at": datetime.now(timezone.utc),
     }
     await db.users.insert_one(user_doc)
@@ -444,6 +501,96 @@ async def delete_bucket(bid: str, user=Depends(current_user)):
     return {"ok": True}
 
 
+# ---------- Savings destinations ----------
+async def _validate_destination_currency(user: dict, currency: str):
+    """Destination currency must match user currency OR a linked-account currency."""
+    if currency == user.get("currency"):
+        return
+    # Look at any active linked account's known currencies (default EUR for Spuerkeess/Revolut sandbox).
+    accs = await db.linked_accounts.find(
+        {"user_id": user["id"], "is_active": True}, {"_id": 0}
+    ).to_list(10)
+    linked_currencies = {(a.get("primary_currency") or "EUR") for a in accs}
+    if currency not in linked_currencies:
+        raise HTTPException(
+            400,
+            f"Destination currency {currency} doesn't match user currency or any linked account.",
+        )
+
+
+@api.get("/destinations", response_model=List[SavingsDestinationOut])
+async def list_destinations(user=Depends(current_user)):
+    rows = await db.savings_destinations.find(
+        {"user_id": user["id"], "is_active": True}, {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    return [to_dest_out(r) for r in rows]
+
+
+@api.post("/destinations", response_model=SavingsDestinationOut, status_code=201)
+async def create_destination(data: SavingsDestinationIn, user=Depends(current_user)):
+    await _validate_destination_currency(user, data.currency)
+    did = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": did, "user_id": user["id"], **data.model_dump(),
+        "is_active": True, "created_at": now,
+    }
+    if data.is_default:
+        await db.savings_destinations.update_many(
+            {"user_id": user["id"]}, {"$set": {"is_default": False}}
+        )
+    await db.savings_destinations.insert_one(doc)
+    return to_dest_out(doc)
+
+
+@api.patch("/destinations/{did}", response_model=SavingsDestinationOut)
+async def update_destination(did: str, data: SavingsDestinationIn, user=Depends(current_user)):
+    await _validate_destination_currency(user, data.currency)
+    existing = await db.savings_destinations.find_one({"id": did, "user_id": user["id"]})
+    if not existing:
+        raise HTTPException(404, "Destination not found")
+    if data.is_default:
+        await db.savings_destinations.update_many(
+            {"user_id": user["id"], "id": {"$ne": did}}, {"$set": {"is_default": False}}
+        )
+    await db.savings_destinations.update_one(
+        {"id": did, "user_id": user["id"]}, {"$set": data.model_dump()}
+    )
+    fresh = await db.savings_destinations.find_one({"id": did}, {"_id": 0})
+    return to_dest_out(fresh)
+
+
+@api.delete("/destinations/{did}")
+async def delete_destination(did: str, user=Depends(current_user)):
+    d = await db.savings_destinations.find_one({"id": did, "user_id": user["id"]})
+    if not d:
+        raise HTTPException(404, "Destination not found")
+    if d.get("is_default") and d.get("is_active"):
+        # Promote another active destination to default before disabling.
+        other = await db.savings_destinations.find_one(
+            {"user_id": user["id"], "id": {"$ne": did}, "is_active": True}
+        )
+        if other:
+            await db.savings_destinations.update_one(
+                {"id": other["id"]}, {"$set": {"is_default": True}}
+            )
+    await db.savings_destinations.update_one(
+        {"id": did, "user_id": user["id"]}, {"$set": {"is_active": False, "is_default": False}}
+    )
+    return {"ok": True}
+
+
+async def _get_default_destination(user_id: str) -> Optional[dict]:
+    d = await db.savings_destinations.find_one(
+        {"user_id": user_id, "is_default": True, "is_active": True}, {"_id": 0}
+    )
+    if d:
+        return d
+    return await db.savings_destinations.find_one(
+        {"user_id": user_id, "is_active": True}, {"_id": 0}
+    )
+
+
 # ---------- Bank linking ----------
 def _revolut_callback_url(request: Request) -> str:
     if REVOLUT_REDIRECT_FALLBACK:
@@ -453,55 +600,45 @@ def _revolut_callback_url(request: Request) -> str:
 
 
 def _revolut_consent_url(state: str, redirect_uri: str) -> str:
-    params = {
-        "client_id": REVOLUT_CLIENT_ID,
-        "response_type": "code",
-        "scope": "accounts",
-        "redirect_uri": redirect_uri,
-        "state": state,
-    }
-    return f"{REVOLUT_AUTH_URL}?{urlencode(params)}"
+    return f"{REVOLUT_AUTH_URL}?{urlencode({'client_id': REVOLUT_CLIENT_ID, 'response_type': 'code', 'scope': 'accounts', 'redirect_uri': redirect_uri, 'state': state})}"
 
 
 @api.post("/bank/link", response_model=LinkedAccountOut, status_code=201)
 async def link_bank(data: LinkedAccountIn, request: Request, user=Depends(current_user)):
-    # One active record per provider per user — deactivate any prior.
     await db.linked_accounts.update_many(
         {"user_id": user["id"], "provider": data.provider, "is_active": True},
         {"$set": {"is_active": False}},
     )
-
     aid = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
 
-    # Revolut + no access_token => OAuth consent flow.
     if data.provider == "revolut" and not data.access_token:
         state = uuid.uuid4().hex
         redirect_uri = _revolut_callback_url(request)
         doc = {
             "id": aid, "user_id": user["id"], "provider": "revolut",
             "access_token": "", "refresh_token": None, "token_expires_at": None,
-            "is_active": False,  # becomes active after callback succeeds
-            "oauth_state": state, "redirect_uri": redirect_uri,
-            "linked_at": now,
+            "is_active": False, "oauth_state": state, "redirect_uri": redirect_uri,
+            "linked_at": now, "connected_at": None, "primary_currency": "EUR",
         }
         await db.linked_accounts.insert_one(doc)
         return LinkedAccountOut(
             id=aid, provider="revolut", is_active=False, linked_at=now,
-            consent_url=_revolut_consent_url(state, redirect_uri),
+            connected_at=None, consent_url=_revolut_consent_url(state, redirect_uri),
         )
 
-    # Legacy / direct-token path (Spuerkeess always; Revolut when token explicitly supplied for tests).
     doc = {
         "id": aid, "user_id": user["id"], "provider": data.provider,
         "access_token": data.access_token or "stub",
         "refresh_token": None, "token_expires_at": None,
         "is_active": True, "oauth_state": None,
-        "linked_at": now,
+        "linked_at": now, "connected_at": now,
+        "primary_currency": "EUR",
     }
     await db.linked_accounts.insert_one(doc)
     return LinkedAccountOut(
-        id=aid, provider=data.provider, is_active=True, linked_at=now, consent_url=None,
+        id=aid, provider=data.provider, is_active=True, linked_at=now,
+        connected_at=now, consent_url=None,
     )
 
 
@@ -515,6 +652,7 @@ async def list_accounts(user=Depends(current_user)):
         LinkedAccountOut(
             id=r["id"], provider=r["provider"],
             is_active=r["is_active"], linked_at=ensure_aware(r["linked_at"]),
+            connected_at=ensure_aware(r["connected_at"]) if r.get("connected_at") else None,
             consent_url=None,
         )
         for r in rows
@@ -531,7 +669,6 @@ async def unlink_bank(aid: str, user=Depends(current_user)):
     return {"ok": True}
 
 
-# Revolut OAuth callback. Browser/WebView lands here after Revolut auth.
 @api.get("/bank/revolut/callback", name="revolut_callback")
 async def revolut_callback(code: Optional[str] = None, state: Optional[str] = None,
                            error: Optional[str] = None):
@@ -542,13 +679,11 @@ async def revolut_callback(code: Optional[str] = None, state: Optional[str] = No
     acc = await db.linked_accounts.find_one({"oauth_state": state})
     if not acc:
         return HTMLResponse(_callback_page("State not recognised."), status_code=404)
-
     redirect_uri = acc.get("redirect_uri")
     try:
         token_data = await run_in_threadpool(_revolut_exchange_code, code, redirect_uri)
     except HTTPException as e:
         return HTMLResponse(_callback_page(f"Token exchange failed: {e.detail}"), status_code=502)
-
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(token_data.get("expires_in") or 3600))
     await db.linked_accounts.update_one(
         {"id": acc["id"]},
@@ -558,6 +693,7 @@ async def revolut_callback(code: Optional[str] = None, state: Optional[str] = No
             "token_expires_at": expires_at,
             "is_active": True,
             "oauth_state": None,
+            "connected_at": datetime.now(timezone.utc),
         }},
     )
     return HTMLResponse(_callback_page("All set — you can close this window and return to Éva.", success=True))
@@ -565,7 +701,6 @@ async def revolut_callback(code: Optional[str] = None, state: Optional[str] = No
 
 def _callback_page(msg: str, success: bool = False) -> str:
     color = "#7B8C73" if success else "#C27D72"
-    # The deep-link href lets a mobile WebBrowser session auto-close.
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>Éva — Revolut</title>
@@ -583,14 +718,9 @@ def _revolut_exchange_code(code: str, redirect_uri: Optional[str]) -> dict:
     try:
         resp = requests.post(
             REVOLUT_TOKEN_URL,
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect_uri or "",
-                "client_id": REVOLUT_CLIENT_ID,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            timeout=15,
+            data={"grant_type": "authorization_code", "code": code,
+                  "redirect_uri": redirect_uri or "", "client_id": REVOLUT_CLIENT_ID},
+            headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=15,
         )
     except requests.RequestException as e:
         raise HTTPException(502, f"Token endpoint unreachable: {e}")
@@ -606,13 +736,9 @@ def _revolut_refresh(refresh_token: str) -> dict:
     try:
         resp = requests.post(
             REVOLUT_TOKEN_URL,
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "client_id": REVOLUT_CLIENT_ID,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            timeout=15,
+            data={"grant_type": "refresh_token", "refresh_token": refresh_token,
+                  "client_id": REVOLUT_CLIENT_ID},
+            headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=15,
         )
     except requests.RequestException as e:
         raise HTTPException(502, f"Refresh endpoint unreachable: {e}")
@@ -623,145 +749,124 @@ def _revolut_refresh(refresh_token: str) -> dict:
     return resp.json()
 
 
-# ---------- Bank sync (ingestion) ----------
+# ---------- Sync ----------
 def _fetch_revolut_personal(token: str) -> list:
-    """Call the personal Open Banking sandbox transactions endpoint."""
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     try:
-        # Standard PSD2 AISP path. Server returns 401 for invalid tokens — matches existing tests.
         resp = requests.get(f"{REVOLUT_API_BASE}/transactions", headers=headers, timeout=15)
     except requests.RequestException as e:
         raise HTTPException(502, f"Revolut unreachable: {e}")
     if resp.status_code == 401:
         raise HTTPException(401, "Revolut token rejected")
-    if resp.status_code == 404:
-        # Fallback to /accounts → /accounts/{id}/transactions in newer sandbox builds.
-        try:
-            accs = requests.get(f"{REVOLUT_API_BASE}/accounts", headers=headers, timeout=15)
-        except requests.RequestException as e:
-            raise HTTPException(502, f"Revolut accounts unreachable: {e}")
-        if accs.status_code == 401:
-            raise HTTPException(401, "Revolut token rejected")
-        if accs.status_code >= 400:
-            raise HTTPException(502, f"Revolut accounts error {accs.status_code}")
-        try:
-            data = accs.json()
-        except ValueError:
-            return []
-        ids = []
-        # Open Banking standard shape: {"Data": {"Account": [{"AccountId": "..."}]}}
-        for a in (data.get("Data", {}).get("Account") or []):
-            aid = a.get("AccountId") or a.get("id")
-            if aid:
-                ids.append(aid)
-        agg = []
-        for aid in ids:
-            try:
-                tr = requests.get(f"{REVOLUT_API_BASE}/accounts/{aid}/transactions", headers=headers, timeout=15)
-            except requests.RequestException:
-                continue
-            if tr.status_code < 400:
-                try:
-                    tj = tr.json()
-                    agg.extend(tj.get("Data", {}).get("Transaction") or tj or [])
-                except ValueError:
-                    pass
-        return agg
     if resp.status_code >= 400:
         raise HTTPException(502, f"Revolut error {resp.status_code}")
     try:
         body = resp.json()
     except ValueError:
         return []
-    # Either a flat array or an Open Banking-style wrapper.
     if isinstance(body, list):
         return body
     return body.get("Data", {}).get("Transaction") or body.get("transactions") or []
 
 
 def _parse_revolut(items: list) -> list:
-    """Map Revolut payload to our raw_transactions shape. Best-effort across personal and B2B shapes."""
     out = []
     for it in items:
         provider_id = it.get("TransactionId") or it.get("id") or it.get("transaction_id")
         if not provider_id:
             continue
-        # merchant name across shapes
-        merch = it.get("MerchantDetails", {}).get("MerchantName") if isinstance(it.get("MerchantDetails"), dict) else None
+        merch = None
+        md = it.get("MerchantDetails")
+        if isinstance(md, dict):
+            merch = md.get("MerchantName")
         if not merch and isinstance(it.get("merchant"), dict):
             merch = it["merchant"].get("name")
-        merch = merch or it.get("TransactionInformation") or it.get("description") or it.get("reference") or "Unknown"
-        # amount across shapes
+        merch = merch or it.get("TransactionInformation") or it.get("description") or "Unknown"
+
         amount = 0.0
         currency = "EUR"
         amt_obj = it.get("Amount")
         if isinstance(amt_obj, dict):
             amount = float(amt_obj.get("Amount") or 0.0)
             currency = amt_obj.get("Currency") or "EUR"
-            # CreditDebitIndicator: "Credit" inflow, "Debit" outflow. Convention: treat Debit as negative.
             if (it.get("CreditDebitIndicator") or "").lower() == "debit":
                 amount = -abs(amount)
             elif (it.get("CreditDebitIndicator") or "").lower() == "credit":
                 amount = abs(amount)
         else:
-            legs = it.get("legs") or ([it.get("leg")] if it.get("leg") else [])
-            if legs:
-                leg = legs[0] or {}
-                amount = float(leg.get("amount") or 0.0)
-                currency = leg.get("currency") or "EUR"
-            else:
-                amount = float(it.get("amount") or 0.0)
-                currency = it.get("currency") or "EUR"
-        if amount >= 0:  # inflow / credit — skip
+            amount = float(it.get("amount") or 0.0)
+            currency = it.get("currency") or "EUR"
+        if amount >= 0:
             continue
-        ts_raw = (
-            it.get("BookingDateTime") or it.get("ValueDateTime")
-            or it.get("completed_at") or it.get("created_at")
-        )
+
+        ts_raw = (it.get("BookingDateTime") or it.get("ValueDateTime")
+                  or it.get("completed_at") or it.get("created_at"))
         try:
             ts = datetime.fromisoformat((ts_raw or "").replace("Z", "+00:00"))
         except (TypeError, ValueError):
             ts = datetime.now(timezone.utc)
+
+        # Source: prefer AccountId, fall back to card last4 or "unknown"
+        source_id = it.get("AccountId") or (it.get("account") or {}).get("id") or it.get("source_id")
+        source_label = (it.get("AccountName") or
+                        (it.get("account") or {}).get("name") or
+                        f"Revolut · {currency}")
+        source_type = "account"
+        if it.get("CardId") or it.get("card_id"):
+            source_type = "card"
+            source_id = source_id or it.get("CardId") or it.get("card_id")
+        if (it.get("PocketId") or it.get("pocket_id") or
+                (md or {}).get("PocketId")):
+            source_type = "pocket"
+
         out.append({
             "provider_txn_id": str(provider_id),
             "merchant_name": str(merch),
             "amount": abs(amount),
             "currency": currency,
             "transacted_at": ts,
+            "source_account_id": str(source_id) if source_id else None,
+            "source_label": source_label,
+            "source_type": source_type,
+            "source_currency": currency,
         })
     return out
 
 
-def _stub_spuerkeess() -> list:
-    now = datetime.now(timezone.utc)
-    day_key = now.strftime("%Y%m%d%H%M%S")
+def _stub_spuerkeess(connected_at: datetime) -> list:
+    """Stub generates transactions *after* connected_at — no retroactive taxation."""
+    day_key = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     samples = [
-        ("Starbucks Luxembourg-Ville", 4.80, 1),
-        ("Cactus Belair", 38.20, 6),
-        ("McDonalds Cloche d'Or", 9.50, 3),
-        ("Uber Trip", 14.20, 2),
-        ("Spotify AB", 9.99, 7),
-        ("Zara Auchan", 64.90, 4),
-        ("Costa Coffee Gare", 5.10, 1),
+        # (merchant, amount, minutes-after-connection, source_id, source_label, source_type)
+        ("Starbucks Luxembourg-Ville", 4.80, 5, "spk_main", "Spuerkeess · Checking", "account"),
+        ("Cactus Belair", 38.20, 90, "spk_main", "Spuerkeess · Checking", "account"),
+        ("McDonalds Cloche d'Or", 9.50, 120, "spk_main", "Spuerkeess · Checking", "account"),
+        ("Uber Trip", 14.20, 180, "spk_card_1234", "Spuerkeess · Card *1234", "card"),
+        ("Spotify AB", 9.99, 240, "spk_main", "Spuerkeess · Checking", "account"),
+        ("Zara Auchan", 64.90, 300, "spk_card_1234", "Spuerkeess · Card *1234", "card"),
+        ("Costa Coffee Gare", 5.10, 30, "spk_main", "Spuerkeess · Checking", "account"),
     ]
-    return [
-        {
+    out = []
+    for i, (m, amt, mins, sid, slabel, stype) in enumerate(samples):
+        out.append({
             "provider_txn_id": f"spk_{i}_{day_key}",
             "merchant_name": m,
             "amount": amt,
             "currency": "EUR",
-            "transacted_at": now - timedelta(days=days, minutes=(i * 47) % 600),
-        }
-        for i, (m, amt, days) in enumerate(samples)
-    ]
+            "transacted_at": ensure_aware(connected_at) + timedelta(minutes=mins),
+            "source_account_id": sid,
+            "source_label": slabel,
+            "source_type": stype,
+            "source_currency": "EUR",
+        })
+    return out
 
 
 async def _refresh_revolut_if_needed(acc: dict) -> str:
-    """Returns a fresh access_token, refreshing it via the OAuth refresh flow if expired."""
     token = acc.get("access_token") or ""
     expires_at = acc.get("token_expires_at")
     if not expires_at or not acc.get("refresh_token"):
-        return token  # legacy direct-token mode; let the call surface the error.
+        return token
     expires_at = ensure_aware(expires_at)
     if datetime.now(timezone.utc) < expires_at - timedelta(seconds=60):
         return token
@@ -771,9 +876,7 @@ async def _refresh_revolut_if_needed(acc: dict) -> str:
     new_exp = datetime.now(timezone.utc) + timedelta(seconds=int(fresh.get("expires_in") or 3600))
     await db.linked_accounts.update_one(
         {"id": acc["id"]},
-        {"$set": {
-            "access_token": new_access, "refresh_token": new_refresh, "token_expires_at": new_exp,
-        }},
+        {"$set": {"access_token": new_access, "refresh_token": new_refresh, "token_expires_at": new_exp}},
     )
     return new_access
 
@@ -788,24 +891,32 @@ async def bank_sync(user=Depends(current_user)):
 
     ingested = 0
     skipped_duplicates = 0
+    skipped_retroactive = 0
     for acc in accounts:
+        connected_at = ensure_aware(acc.get("connected_at") or acc.get("linked_at"))
         provider = acc["provider"]
         if provider == "revolut":
             token = await _refresh_revolut_if_needed(acc)
             raw = await run_in_threadpool(_fetch_revolut_personal, token)
             items = _parse_revolut(raw)
         else:
-            items = _stub_spuerkeess()
+            items = _stub_spuerkeess(connected_at)
 
         for it in items:
+            # NO RETROACTIVE TAXATION — ignore transactions at/before account connection time.
+            tx_ts = ensure_aware(it["transacted_at"])
+            if tx_ts <= connected_at:
+                skipped_retroactive += 1
+                continue
+
             existing = await db.raw_transactions.find_one({
-                "user_id": user["id"],
-                "account_id": acc["id"],
+                "user_id": user["id"], "account_id": acc["id"],
                 "provider_txn_id": it["provider_txn_id"],
             })
             if existing:
                 skipped_duplicates += 1
                 continue
+
             await db.raw_transactions.insert_one({
                 "id": str(uuid.uuid4()),
                 "user_id": user["id"],
@@ -814,23 +925,28 @@ async def bank_sync(user=Depends(current_user)):
                 "merchant_name": it["merchant_name"],
                 "amount": float(it["amount"]),
                 "currency": it["currency"],
-                "transacted_at": it["transacted_at"],
+                "transacted_at": tx_ts,
                 "ingested_at": datetime.now(timezone.utc),
                 "matched_category_id": None,
                 "status": "pending",
+                "source_account_id": it.get("source_account_id"),
+                "source_label": it.get("source_label"),
+                "source_type": it.get("source_type") or "unknown",
+                "source_currency": it.get("source_currency") or it["currency"],
             })
             ingested += 1
 
-    return {"ingested": ingested, "duplicates": skipped_duplicates, "accounts": len(accounts)}
+    return {
+        "ingested": ingested,
+        "duplicates": skipped_duplicates,
+        "skipped_retroactive": skipped_retroactive,
+        "accounts": len(accounts),
+    }
 
 
 # ---------- Tax engine ----------
 def _match_category(merchant: str, cats: list) -> Optional[dict]:
     name = (merchant or "").lower()
-    # Iterate in DB-insertion order; "Ethical Penalty" is last so it only matches when
-    # its specific brands are present *and* nothing else matched first. But because
-    # we want it to take precedence for explicit brand hits (e.g. Primark, Amazon),
-    # check it FIRST.
     ordered = sorted(cats, key=lambda c: 0 if c.get("name") == "Ethical Penalty" else 1)
     for cat in ordered:
         for kw in cat.get("merchant_keywords") or []:
@@ -839,8 +955,71 @@ def _match_category(merchant: str, cats: list) -> Optional[dict]:
     return None
 
 
+async def _execute_transfers(user: dict, trigger: str = "manual") -> List[dict]:
+    """
+    Group eligible tax_events (pending events, no requires_review, with source and destination)
+    by (source_account_id, destination_id), simulate a transfer per group, write tax_transfers
+    rows, and mark events transferred/executed.
+
+    Returns a list of per-group summaries.
+    """
+    pending = await db.tax_events.find(
+        {"user_id": user["id"], "status": "pending"}, {"_id": 0}
+    ).to_list(2000)
+    if not pending:
+        return []
+
+    groups: dict = {}
+    for ev in pending:
+        if ev.get("requires_review") or ev.get("transfer_status") == "requires_review":
+            continue
+        if not ev.get("source_account_id") or not ev.get("destination_id"):
+            continue
+        key = (ev["source_account_id"], ev["destination_id"])
+        groups.setdefault(key, []).append(ev)
+
+    out = []
+    for (src, dest), events in groups.items():
+        total = round(sum(float(e["tax_amount"]) for e in events), 2)
+        ref = f"sim_{uuid.uuid4().hex[:12]}"
+        transfer_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        first = events[0]
+        await db.tax_transfers.insert_one({
+            "id": transfer_id,
+            "user_id": user["id"],
+            "source_account_id": src,
+            "source_label": first.get("source_label"),
+            "destination_id": dest,
+            "destination_label": first.get("destination_label"),
+            "destination_currency": first.get("destination_currency"),
+            "tax_event_ids": [e["id"] for e in events],
+            "total_amount": total,
+            "status": "simulated",
+            "provider_ref": ref,
+            "executed_at": now,
+            "trigger": trigger,
+        })
+        await db.tax_events.update_many(
+            {"id": {"$in": [e["id"] for e in events]}},
+            {"$set": {
+                "status": "transferred",
+                "transfer_status": "executed",
+                "transfer_id": transfer_id,
+                "transfer_provider_ref": ref,
+            }},
+        )
+        out.append({
+            "transfer_id": transfer_id, "provider_ref": ref,
+            "total_amount": total, "event_count": len(events),
+            "source_account_id": src, "destination_id": dest,
+            "status": "executed",
+        })
+    return out
+
+
 async def _maybe_auto_transfer(user: dict):
-    """Savings-Beast: if pending taxes exceed the trigger amount, transfer them inline."""
+    """Savings-Beast: when pending > €5 after process, fire transfers immediately."""
     if user.get("profile_type") != "savings_beast":
         return None
     pending = await db.tax_events.find(
@@ -849,18 +1028,30 @@ async def _maybe_auto_transfer(user: dict):
     total = round(sum(float(e["tax_amount"]) for e in pending), 2)
     if total <= SAVINGS_BEAST_TRIGGER_AMOUNT or not pending:
         return None
-    ids = [e["id"] for e in pending]
-    transfer_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc)
-    await db.tax_transfers.insert_one({
-        "id": transfer_id, "user_id": user["id"], "total_amount": total,
-        "tax_event_ids": ids, "status": "simulated", "executed_at": now,
-        "trigger": "savings_beast_auto",
-    })
-    await db.tax_events.update_many(
-        {"user_id": user["id"], "id": {"$in": ids}}, {"$set": {"status": "transferred"}}
+    results = await _execute_transfers(user, trigger="savings_beast_auto")
+    if not results:
+        return None
+    return {
+        "transferred": sum(r["event_count"] for r in results),
+        "total_amount": round(sum(r["total_amount"] for r in results), 2),
+        "transfers": results,
+    }
+
+
+async def _maybe_instant_transfer(user: dict):
+    if user.get("transfer_frequency", "instant") != "instant":
+        return None
+    results = await _execute_transfers(user, trigger="instant")
+    if not results:
+        return None
+    await db.users.update_one(
+        {"id": user["id"]}, {"$set": {"transfer_last_run_at": datetime.now(timezone.utc)}}
     )
-    return {"transferred": len(ids), "total_amount": total, "transfer_id": transfer_id}
+    return {
+        "transferred": sum(r["event_count"] for r in results),
+        "total_amount": round(sum(r["total_amount"] for r in results), 2),
+        "transfers": results,
+    }
 
 
 @api.post("/tax/process")
@@ -877,17 +1068,18 @@ async def tax_process(user=Depends(current_user)):
     cats = await db.categories.find({"user_id": user["id"]}, {"_id": 0}).to_list(200)
     default_bucket_id = user.get("default_bucket_id")
     profile = user.get("profile_type", "balanced")
+    destination = await _get_default_destination(user["id"])
 
     taxed = 0
     skipped = 0
     unmatched = 0
+    review = 0
 
     for tx in pending:
         cat = _match_category(tx["merchant_name"], cats)
         if not cat:
             await db.raw_transactions.update_one(
-                {"id": tx["id"]},
-                {"$set": {"status": "unmatched", "matched_category_id": None}},
+                {"id": tx["id"]}, {"$set": {"status": "unmatched", "matched_category_id": None}},
             )
             unmatched += 1
             continue
@@ -897,9 +1089,7 @@ async def tax_process(user=Depends(current_user)):
         counter = await db.daily_repetition_counters.find_one(counter_key)
         hit_count = counter["hit_count"] if counter else 0
 
-        day_start = ensure_aware(tx["transacted_at"]).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        day_start = ensure_aware(tx["transacted_at"]).replace(hour=0, minute=0, second=0, microsecond=0)
         day_end = day_start + timedelta(days=1)
         agg = await db.tax_events.aggregate([
             {"$match": {
@@ -914,8 +1104,7 @@ async def tax_process(user=Depends(current_user)):
         cap = float(cat.get("daily_cap_amount", 10.0))
         if taxed_today >= cap:
             await db.raw_transactions.update_one(
-                {"id": tx["id"]},
-                {"$set": {"status": "skipped", "matched_category_id": cat["id"]}},
+                {"id": tx["id"]}, {"$set": {"status": "skipped", "matched_category_id": cat["id"]}},
             )
             skipped += 1
             continue
@@ -924,20 +1113,34 @@ async def tax_process(user=Depends(current_user)):
         inc = float(cat.get("rep_increment", 0.05))
         max_rate = float(cat.get("max_tax_rate", 0.50))
         rep_rate = min(max_rate, base + hit_count * inc)
-        # Apply behavioral profile multiplier on top of the rep-adjusted rate.
         effective_rate = apply_profile_multiplier(rep_rate, cat["name"], profile, max_rate)
         tax_amount = round(float(tx["amount"]) * effective_rate, 2)
-
-        # Cap-aware tax: shave to remaining cap.
         if taxed_today + tax_amount > cap:
             tax_amount = round(max(0.0, cap - taxed_today), 2)
         if tax_amount <= 0:
             await db.raw_transactions.update_one(
-                {"id": tx["id"]},
-                {"$set": {"status": "skipped", "matched_category_id": cat["id"]}},
+                {"id": tx["id"]}, {"$set": {"status": "skipped", "matched_category_id": cat["id"]}},
             )
             skipped += 1
             continue
+
+        # Source / destination resolution.
+        src_id = tx.get("source_account_id")
+        src_label = tx.get("source_label")
+        src_type = tx.get("source_type") or "unknown"
+        src_ccy = tx.get("source_currency") or tx.get("currency") or "EUR"
+        dest_id = destination["id"] if destination else None
+        dest_label = destination["label"] if destination else None
+        dest_ccy = destination["currency"] if destination else None
+
+        requires_review = False
+        review_reason = None
+        if not src_id:
+            requires_review, review_reason = True, "unknown_source"
+        elif not destination:
+            requires_review, review_reason = True, "no_destination"
+        elif dest_ccy and src_ccy and dest_ccy != src_ccy:
+            requires_review, review_reason = True, "currency_mismatch"
 
         event_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
@@ -957,31 +1160,54 @@ async def tax_process(user=Depends(current_user)):
             "profile_applied": profile,
             "transacted_at": ensure_aware(tx["transacted_at"]),
             "created_at": now,
+            # Source / destination tracking
+            "source_account_id": src_id,
+            "source_label": src_label,
+            "source_type": src_type,
+            "source_currency": src_ccy,
+            "destination_id": dest_id,
+            "destination_label": dest_label,
+            "destination_currency": dest_ccy,
+            "transfer_status": "requires_review" if requires_review else "pending",
+            "transfer_id": None,
+            "transfer_provider_ref": None,
+            "requires_review": requires_review,
+            "review_reason": review_reason,
         })
         if counter:
             await db.daily_repetition_counters.update_one(
                 {"id": counter["id"]}, {"$inc": {"hit_count": 1}}
             )
         else:
-            await db.daily_repetition_counters.insert_one({
-                "id": str(uuid.uuid4()), **counter_key, "hit_count": 1,
-            })
+            await db.daily_repetition_counters.insert_one(
+                {"id": str(uuid.uuid4()), **counter_key, "hit_count": 1}
+            )
         if default_bucket_id:
             await db.buckets.update_one(
                 {"id": default_bucket_id, "user_id": user["id"]},
                 {"$inc": {"saved_amount": tax_amount}},
             )
         await db.raw_transactions.update_one(
-            {"id": tx["id"]},
-            {"$set": {"status": "taxed", "matched_category_id": cat["id"]}},
+            {"id": tx["id"]}, {"$set": {"status": "taxed", "matched_category_id": cat["id"]}},
         )
         taxed += 1
+        if requires_review:
+            review += 1
 
-    result = {"processed": len(pending), "taxed": taxed, "skipped": skipped, "unmatched": unmatched}
+    result = {
+        "processed": len(pending), "taxed": taxed,
+        "skipped": skipped, "unmatched": unmatched,
+        "requires_review": review,
+    }
 
     auto = await _maybe_auto_transfer(user)
     if auto:
         result["auto_transfer"] = auto
+    # Re-read user (savings_beast may have refreshed timestamps).
+    user = await db.users.find_one({"id": user["id"]}, {"_id": 0}) or user
+    instant = await _maybe_instant_transfer(user)
+    if instant and not auto:
+        result["instant_transfer"] = instant
     return result
 
 
@@ -1009,24 +1235,67 @@ async def tax_override(event_id: str, user=Depends(current_user)):
 
 @api.post("/tax/transfer")
 async def tax_transfer(user=Depends(current_user)):
-    pending = await db.tax_events.find(
-        {"user_id": user["id"], "status": "pending"}, {"_id": 0}
-    ).to_list(1000)
-    if not pending:
-        return {"transferred": 0, "total_amount": 0.0}
-    total = round(sum(float(e["tax_amount"]) for e in pending), 2)
-    ids = [e["id"] for e in pending]
-    transfer_id = str(uuid.uuid4())
+    """Manual trigger — group eligible pending events and execute simulated transfers."""
+    results = await _execute_transfers(user, trigger="manual")
+    if not results:
+        return {"transferred": 0, "total_amount": 0.0, "transfers": []}
+    return {
+        "transferred": sum(r["event_count"] for r in results),
+        "total_amount": round(sum(r["total_amount"] for r in results), 2),
+        "transfers": results,
+    }
+
+
+# ---------- Scheduler ----------
+async def _run_scheduler_once():
+    """One pass — process users whose scheduled transfer is due."""
     now = datetime.now(timezone.utc)
-    await db.tax_transfers.insert_one({
-        "id": transfer_id, "user_id": user["id"], "total_amount": total,
-        "tax_event_ids": ids, "status": "simulated", "executed_at": now,
-        "trigger": "manual",
-    })
-    await db.tax_events.update_many(
-        {"user_id": user["id"], "id": {"$in": ids}}, {"$set": {"status": "transferred"}}
-    )
-    return {"transferred": len(ids), "total_amount": total, "transfer_id": transfer_id}
+    users = await db.users.find(
+        {"transfer_frequency": {"$in": ["daily", "weekly"]}, "pause_all_taxes": {"$ne": True}},
+        {"_id": 0},
+    ).to_list(10000)
+    fired = []
+    for u in users:
+        freq = u.get("transfer_frequency")
+        last = u.get("transfer_last_run_at")
+        interval = timedelta(days=1) if freq == "daily" else timedelta(days=7)
+        if last and ensure_aware(last) + interval > now:
+            continue
+        results = await _execute_transfers(u, trigger=f"scheduler_{freq}")
+        await db.users.update_one(
+            {"id": u["id"]}, {"$set": {"transfer_last_run_at": now}}
+        )
+        if results:
+            fired.append({"user_id": u["id"], "frequency": freq, "transfers": results})
+    return fired
+
+
+@api.post("/scheduler/run")
+async def scheduler_run_manual(user=Depends(current_user)):
+    """Manual scheduler trigger (debug/test). Only runs for the current user."""
+    if user.get("transfer_frequency") in ("daily", "weekly") and not user.get("pause_all_taxes"):
+        results = await _execute_transfers(user, trigger=f"scheduler_{user['transfer_frequency']}_manual")
+        await db.users.update_one(
+            {"id": user["id"]}, {"$set": {"transfer_last_run_at": datetime.now(timezone.utc)}}
+        )
+        return {"ok": True, "transfers": results}
+    # Even for instant frequency, allow manual run to flush pending.
+    results = await _execute_transfers(user, trigger="scheduler_manual")
+    return {"ok": True, "transfers": results}
+
+
+@app.on_event("startup")
+async def _start_scheduler_loop():
+    async def loop():
+        while True:
+            try:
+                await asyncio.sleep(60)
+                await _run_scheduler_once()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Scheduler loop iteration failed")
+    asyncio.create_task(loop())
 
 
 # ---------- Activity feed ----------
@@ -1072,6 +1341,16 @@ async def activity_feed(limit: int = 100, user=Depends(current_user)):
                 created_at=created,
                 can_override=can_override,
                 profile_applied=ev.get("profile_applied", "balanced"),
+                source_account_id=ev.get("source_account_id") or r.get("source_account_id"),
+                source_label=ev.get("source_label") or r.get("source_label"),
+                source_type=ev.get("source_type") or r.get("source_type"),
+                source_currency=ev.get("source_currency") or r.get("source_currency"),
+                destination_id=ev.get("destination_id"),
+                destination_label=ev.get("destination_label"),
+                destination_currency=ev.get("destination_currency"),
+                transfer_status=ev.get("transfer_status"),
+                transfer_provider_ref=ev.get("transfer_provider_ref"),
+                requires_review=bool(ev.get("requires_review", False)),
             ))
         else:
             label = "skipped" if r["status"] == "skipped" else (
@@ -1093,6 +1372,10 @@ async def activity_feed(limit: int = 100, user=Depends(current_user)):
                 created_at=None,
                 can_override=False,
                 profile_applied=None,
+                source_account_id=r.get("source_account_id"),
+                source_label=r.get("source_label"),
+                source_type=r.get("source_type"),
+                source_currency=r.get("source_currency"),
             ))
     return out
 
@@ -1103,34 +1386,28 @@ async def insights_summary(user=Depends(current_user)):
     base_match = {"user_id": user["id"], "status": {"$in": ["pending", "transferred"]}}
     agg = await db.tax_events.aggregate([
         {"$match": base_match},
-        {"$group": {
-            "_id": None,
-            "total_taxed": {"$sum": "$tax_amount"},
-            "total_spent": {"$sum": "$original_amount"},
-            "count": {"$sum": 1},
-        }},
+        {"$group": {"_id": None,
+                    "total_taxed": {"$sum": "$tax_amount"},
+                    "total_spent": {"$sum": "$original_amount"},
+                    "count": {"$sum": 1}}},
     ]).to_list(1)
     totals = agg[0] if agg else {"total_spent": 0, "total_taxed": 0, "count": 0}
 
     by_cat = await db.tax_events.aggregate([
         {"$match": base_match},
-        {"$group": {
-            "_id": "$category_name",
-            "spent": {"$sum": "$original_amount"},
-            "taxed": {"$sum": "$tax_amount"},
-            "count": {"$sum": 1},
-        }},
+        {"$group": {"_id": "$category_name",
+                    "spent": {"$sum": "$original_amount"},
+                    "taxed": {"$sum": "$tax_amount"},
+                    "count": {"$sum": 1}}},
         {"$sort": {"spent": -1}},
     ]).to_list(100)
 
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
     by_day = await db.tax_events.aggregate([
         {"$match": {**base_match, "created_at": {"$gte": week_ago}}},
-        {"$group": {
-            "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}},
-            "spent": {"$sum": "$original_amount"},
-            "taxed": {"$sum": "$tax_amount"},
-        }},
+        {"$group": {"_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}},
+                    "spent": {"$sum": "$original_amount"},
+                    "taxed": {"$sum": "$tax_amount"}}},
         {"$sort": {"_id": 1}},
     ]).to_list(31)
 
@@ -1146,18 +1423,170 @@ async def insights_summary(user=Depends(current_user)):
         "total_spent": round(totals.get("total_spent", 0), 2),
         "total_taxed": round(totals.get("total_taxed", 0), 2),
         "transactions": totals.get("count", 0),
-        "by_category": [
-            {"name": r["_id"], "spent": round(r["spent"], 2),
-             "taxed": round(r["taxed"], 2), "count": r["count"]}
-            for r in by_cat
-        ],
-        "by_day": [
-            {"date": r["_id"], "spent": round(r["spent"], 2), "taxed": round(r["taxed"], 2)}
-            for r in by_day
-        ],
+        "by_category": [{"name": r["_id"], "spent": round(r["spent"], 2),
+                         "taxed": round(r["taxed"], 2), "count": r["count"]} for r in by_cat],
+        "by_day": [{"date": r["_id"], "spent": round(r["spent"], 2),
+                    "taxed": round(r["taxed"], 2)} for r in by_day],
         "streak_days_no_impulse": days_since,
         "profile_type": user.get("profile_type", "balanced"),
     }
+
+
+# ---------- Monthly resume ----------
+def _month_bounds(year: int, month: int):
+    start = datetime(year, month, 1, tzinfo=timezone.utc)
+    if month == 12:
+        end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
+    return start, end
+
+
+async def _monthly_data(user: dict, year: int, month: int):
+    start, end = _month_bounds(year, month)
+    match = {"user_id": user["id"], "transacted_at": {"$gte": start, "$lt": end}}
+
+    events = await db.tax_events.find(match, {"_id": 0}).sort("transacted_at", 1).to_list(5000)
+
+    total_spent = sum(float(e.get("original_amount", 0)) for e in events
+                      if e.get("status") != "overridden")
+    total_taxed = sum(float(e.get("tax_amount", 0)) for e in events
+                      if e.get("status") != "overridden")
+    overridden_count = sum(1 for e in events if e.get("status") == "overridden")
+    review_count = sum(1 for e in events if e.get("requires_review"))
+
+    by_category: dict = {}
+    by_profile: dict = {}
+    by_destination: dict = {}
+    by_status: dict = {}
+    for e in events:
+        cat = e.get("category_name", "Unknown")
+        prof = e.get("profile_applied", "balanced")
+        dest = e.get("destination_label", "—")
+        tax_status = e.get("transfer_status", "pending")
+        amount = 0.0 if e.get("status") == "overridden" else float(e.get("tax_amount", 0))
+        by_category[cat] = by_category.get(cat, 0.0) + amount
+        by_profile[prof] = by_profile.get(prof, 0.0) + amount
+        by_destination[dest] = by_destination.get(dest, 0.0) + amount
+        by_status[tax_status] = by_status.get(tax_status, 0) + 1
+
+    return {
+        "year": year, "month": month,
+        "totals": {
+            "spent": round(total_spent, 2),
+            "taxed": round(total_taxed, 2),
+            "events": len(events),
+            "overridden": overridden_count,
+            "requires_review": review_count,
+        },
+        "by_category": [{"name": k, "taxed": round(v, 2)} for k, v in sorted(by_category.items(), key=lambda x: -x[1])],
+        "by_profile": [{"name": k, "taxed": round(v, 2)} for k, v in sorted(by_profile.items(), key=lambda x: -x[1])],
+        "by_destination": [{"label": k, "taxed": round(v, 2)} for k, v in sorted(by_destination.items(), key=lambda x: -x[1])],
+        "by_transfer_status": [{"status": k, "count": v} for k, v in by_status.items()],
+        "events": [
+            {
+                "transacted_at": ensure_aware(e["transacted_at"]).isoformat(),
+                "merchant": e_get_merchant(e),
+                "category": e.get("category_name"),
+                "original_amount": float(e.get("original_amount", 0)),
+                "currency": e.get("source_currency", "EUR"),
+                "profile": e.get("profile_applied"),
+                "tax_rate": round(float(e.get("tax_rate_applied", 0)), 4),
+                "tax_amount": float(e.get("tax_amount", 0)),
+                "source_label": e.get("source_label"),
+                "destination_label": e.get("destination_label"),
+                "transfer_status": e.get("transfer_status"),
+                "transfer_provider_ref": e.get("transfer_provider_ref"),
+                "status": e.get("status"),
+            }
+            for e in events
+        ],
+    }
+
+
+def e_get_merchant(event: dict) -> Optional[str]:
+    # Tax events don't store merchant directly; surface it via the join when available.
+    # Caller will replace this with raw_tx merchant if needed.
+    return event.get("merchant_name")
+
+
+@api.get("/reports/monthly")
+async def reports_monthly(year: int, month: int, user=Depends(current_user)):
+    if month < 1 or month > 12:
+        raise HTTPException(400, "month must be 1..12")
+    data = await _monthly_data(user, year, month)
+    # Enrich events with merchant_name from raw_transactions.
+    raw_ids = [ev for ev in await db.tax_events.find(
+        {"user_id": user["id"]}, {"_id": 0, "raw_txn_id": 1}
+    ).to_list(5000)]
+    rid_map = {}
+    if data["events"]:
+        # Pull merchants in one query
+        raw_txns = await db.raw_transactions.find(
+            {"user_id": user["id"]}, {"_id": 0, "id": 1, "merchant_name": 1}
+        ).to_list(5000)
+        rid_map = {r["id"]: r["merchant_name"] for r in raw_txns}
+        # Match by raw_txn_id stored on the tax_event document
+        tax_evs = await db.tax_events.find(
+            {"user_id": user["id"]}, {"_id": 0, "id": 1, "raw_txn_id": 1}
+        ).to_list(5000)
+        ev_to_raw = {e["id"]: e.get("raw_txn_id") for e in tax_evs}
+        # We don't have event_id in the projection above; re-pull by transacted_at order.
+        # Simpler: rebuild events list using the same query as _monthly_data.
+        start, end = _month_bounds(year, month)
+        full_evs = await db.tax_events.find(
+            {"user_id": user["id"], "transacted_at": {"$gte": start, "$lt": end}}, {"_id": 0}
+        ).sort("transacted_at", 1).to_list(5000)
+        data["events"] = [
+            {
+                **{
+                    "transacted_at": ensure_aware(e["transacted_at"]).isoformat(),
+                    "merchant": rid_map.get(e.get("raw_txn_id"), "Unknown"),
+                    "category": e.get("category_name"),
+                    "original_amount": float(e.get("original_amount", 0)),
+                    "currency": e.get("source_currency", "EUR"),
+                    "profile": e.get("profile_applied"),
+                    "tax_rate": round(float(e.get("tax_rate_applied", 0)), 4),
+                    "tax_amount": float(e.get("tax_amount", 0)),
+                    "source_label": e.get("source_label"),
+                    "destination_label": e.get("destination_label"),
+                    "transfer_status": e.get("transfer_status"),
+                    "transfer_provider_ref": e.get("transfer_provider_ref"),
+                    "status": e.get("status"),
+                }
+            }
+            for e in full_evs
+        ]
+    return data
+
+
+@api.get("/reports/monthly/export.csv")
+async def reports_monthly_csv(year: int, month: int, user=Depends(current_user)):
+    if month < 1 or month > 12:
+        raise HTTPException(400, "month must be 1..12")
+    data = await reports_monthly(year, month, user=user)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "transacted_at", "merchant", "category", "amount", "currency",
+        "profile", "tax_rate", "tax_amount", "source_label",
+        "destination_label", "transfer_status", "transfer_provider_ref", "status",
+    ])
+    for e in data["events"]:
+        writer.writerow([
+            e["transacted_at"], e["merchant"], e["category"],
+            f"{e['original_amount']:.2f}", e["currency"],
+            e["profile"], f"{e['tax_rate']:.4f}", f"{e['tax_amount']:.2f}",
+            e["source_label"] or "", e["destination_label"] or "",
+            e["transfer_status"] or "", e["transfer_provider_ref"] or "", e["status"] or "",
+        ])
+    csv_bytes = buf.getvalue().encode("utf-8")
+    fname = f"eva_resume_{year}-{month:02d}.csv"
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 # ---------- Wiring ----------
@@ -1165,10 +1594,8 @@ app.include_router(api)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=True, allow_origins=["*"],
+    allow_methods=["*"], allow_headers=["*"],
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
