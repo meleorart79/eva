@@ -1,0 +1,47 @@
+{
+  "summary": "Backend-only testing for Éva (Behavior Tax) MVP. All 13 pytest cases passed (100%). Covered auth (register/login/me/PATCH), categories CRUD with default seeding (7 categories with exact tax rates), buckets (default swap behavior + cannot-delete-default), transactions (tax calculation, bucket increment/decrement, missing category 404), insights summary (totals, by_category, by_day, streak). Currency persistence end-to-end (EUR->GBP->USD) works. Negative paths verified: duplicate email -> 400, wrong password -> 401, missing/invalid JWT -> 401, deleting default bucket -> 400, missing category on tx -> 404. Note: PATCH /auth/me?default_bucket_id=... changes user.default_bucket_id but does NOT flip the previous bucket's is_default flag, while POST /buckets with is_default=true DOES unset others. Inconsistency is documented and may need product decision.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "PATCH /api/auth/me?default_bucket_id=...",
+        "issue": "Changing the default bucket via PATCH /auth/me only updates user.default_bucket_id; it does NOT unset is_default=true on the previously default bucket nor set is_default=true on the new one. POST /api/buckets (is_default=true) and PATCH /api/buckets/{id} (is_default=true) both correctly unset other buckets. Recommend mirroring that logic in PATCH /auth/me or treating buckets.is_default as derived from user.default_bucket_id."
+      },
+      {
+        "endpoint": "backend bcrypt",
+        "issue": "passlib emits 'AttributeError: module bcrypt has no attribute __about__' warning at first hash. Functional but noisy. Pin bcrypt<4.1 or upgrade passlib."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_eva_backend.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Align default-bucket semantics: have PATCH /api/auth/me?default_bucket_id flip is_default flags on bucket docs the same way POST/PATCH /api/buckets does.",
+    "(Optional) Silence passlib bcrypt warning by pinning bcrypt or upgrading passlib."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 480 lines — still readable but approaching the point where splitting into routers/models/services modules would help maintainability.",
+    "JWT_SECRET has a hard-coded dev fallback ('eva-behavior-tax-dev-secret-change-me'); in production this should fail-fast if env var missing.",
+    "Pydantic .dict() is deprecated in v2 — use .model_dump() (used in create_category and update_category).",
+    "@app.on_event('shutdown') is deprecated in modern FastAPI — switch to lifespan handler.",
+    "saved_amount can go negative if a transaction's tax_amount is altered or bucket changes externally before delete; no floor guard. Low risk in MVP."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_eva_backend.py (new)",
+    "/app/test_reports/pytest/pytest_results.xml (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Tests register a fresh user per module run with email pattern test_<uuid>@eva-test.com; transactions/categories/buckets created during tests are deleted in-test where possible. Some TEST_-prefixed docs and the user remain in MongoDB after run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Use email TLD .com (not .test) — EmailStr rejects reserved TLDs with 422. Backend public URL: https://tax-saver-3.preview.emergentagent.com. All endpoints prefixed /api. JWT in Authorization: Bearer header. Default seeded bucket name is 'Travel Fund' (target 2000). Default categories tax rates: Coffee 0.25, Fast Food 0.30, Groceries 0.05, Clothes 0.15, Entertainment 0.20, Transport 0.10, Other 0.10.",
+  "rca_of_issue": "N/A — no failing tests."
+}

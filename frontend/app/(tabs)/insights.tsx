@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -96,7 +96,7 @@ export default function Insights() {
               </View>
               <View style={styles.chipsRow}>
                 {[5, 10, 20, 30, 40].map((y) => (
-                  <Pressable key={y} value={y} active={years === y} onPress={() => setYears(y)} testID={`years-${y}`} />
+                  <Chip key={y} value={y} active={years === y} onPress={() => setYears(y)} testID={`years-${y}`} />
                 ))}
               </View>
             </View>
@@ -107,7 +107,7 @@ export default function Insights() {
               </View>
               <View style={styles.chipsRow}>
                 {[3, 5, 7, 9, 12].map((r) => (
-                  <Pressable key={r} value={`${r}%`} active={rate === r} onPress={() => setRate(r)} testID={`rate-${r}`} />
+                  <Chip key={r} value={`${r}%`} active={rate === r} onPress={() => setRate(r)} testID={`rate-${r}`} />
                 ))}
               </View>
             </View>
@@ -136,17 +136,15 @@ export default function Insights() {
 }
 
 // Local chip control (no slider lib used — keeps bundle small).
-function Pressable({ value, active, onPress, testID }: { value: number | string; active: boolean; onPress: () => void; testID?: string }) {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { Pressable: RNP, Text: RNT } = require("react-native");
+function Chip({ value, active, onPress, testID }: { value: number | string; active: boolean; onPress: () => void; testID?: string }) {
   return (
-    <RNP
+    <Pressable
       testID={testID}
       onPress={onPress}
       style={[chipStyles.chip, active && chipStyles.chipActive]}
     >
-      <RNT style={[chipStyles.chipText, active && chipStyles.chipTextActive]}>{value}</RNT>
-    </RNP>
+      <Text style={[chipStyles.chipText, active && chipStyles.chipTextActive]}>{value}</Text>
+    </Pressable>
   );
 }
 
