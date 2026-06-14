@@ -1,0 +1,55 @@
+{
+  "summary": "Iteration 3 re-verification of Éva backend daily-cap fix + stub determinism. ALL TESTS PASS: 24/24 pytest cases in /app/backend/tests/test_eva_backend.py (100%) plus 2/2 targeted regression cases in /app/backend/tests/test_stub_determinism.py. The previously failing TestTaxEngine::test_daily_cap_skips_second_coffee now passes — verified: with Coffee daily_cap_amount lowered to 0.50 EUR on a fresh user, after Spuerkeess link/sync/process, exactly one of {Starbucks 4.80, Costa 5.10} is 'saved' and the other is 'skipped'. The saved Coffee tax is shaved to <= 0.50 (cap floor). Determinism confirmed: first sync ingested=7/duplicates=0, second sync within the same second ingested=0/duplicates=7. No regressions vs iteration 2.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/tax/process (daily-cap behavior — latent CI flakiness)",
+        "issue": "Cap test currently relies on Starbucks (i=0, 0-min offset) and Costa (i=6, 282-min offset) both landing on the SAME calendar day (yesterday). At UTC test time 11:03 they do, but if tests run between 00:00 and ~04:42 UTC, Costa's transacted_at (now-1day-282min) crosses into 'day before yesterday' and the two Coffee txs end up on different days. In that case the cap would not bite and the test would regress to 2x saved. Recommend hard-pinning Coffee tx dates in _stub_spuerkeess (e.g., always 12:00 UTC anchor) to remove this time-of-day dependency."
+      },
+      {
+        "endpoint": "backend (passlib)",
+        "issue": "Carry-over: passlib bcrypt 'AttributeError: __about__' warning at first hash. Functional but noisy. Pin bcrypt or upgrade passlib."
+      },
+      {
+        "endpoint": "@app.on_event('shutdown') in server.py",
+        "issue": "Carry-over: deprecated FastAPI event hook. Migrate to lifespan context manager."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_eva_backend.py",
+    "/app/backend/tests/test_stub_determinism.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional, low priority) Pin Coffee stub txs to a fixed clock-hour anchor in _stub_spuerkeess() (e.g., now.replace(hour=12, minute=0, second=0) - timedelta(days=1)) so the daily-cap test is independent of UTC wall-clock at run time.",
+    "(Carry-over) Pin bcrypt or upgrade passlib to silence __about__ warning.",
+    "(Carry-over) Migrate @app.on_event('shutdown') to FastAPI lifespan.",
+    "(Carry-over) server.py is 868 lines — split into routers (auth, categories, buckets, bank, tax, activity, insights) + models + services."
+  ],
+  "critical_code_review_comments": [
+    "Fix is minimal and correct: server.py:644 now stores `transacted_at: ensure_aware(tx['transacted_at'])` on each tax_event, and server.py:597 filters the cap aggregation by `transacted_at` (line 597) instead of `created_at`. This makes the cap window align with the actual transaction calendar day — which is also the same key used by daily_repetition_counters (line 581).",
+    "Cap-shave path (server.py:619-620) is correct: if applying full tax would exceed the cap, tax_amount is reduced to (cap - taxed_today). With cap=0.50 and Costa processed first (5.10 EUR × 0.25 = 1.275), the first event is 'saved' with tax_amount=0.50; then taxed_today >= cap on Starbucks → 'skipped'.",
+    "_stub_spuerkeess() is now deterministic per second: `day_key = now.strftime('%Y%m%d%H%M%S')`, no random.randint. Two syncs within the same wall-clock second produce identical provider_txn_ids → 7 duplicates. Crossing a second boundary will re-ingest 7 fresh rows (by design per current spec).",
+    "Saved-amount on bucket can still go negative if override is called after cap-shaved tax — no floor guard (carry-over).",
+    "JWT_SECRET still has dev fallback (carry-over).",
+    "Insights 'streak_days_no_impulse' semantics still ambiguous (carry-over)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_stub_determinism.py (new — targeted regression for same-second determinism + cap shaving)",
+    "/app/test_reports/pytest/pytest_results.xml (regenerated, 24 passed)"
+  ],
+  "success_rate": {"backend": "100% (24/24 main suite + 2/2 regression)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Each run registers fresh test users (test_<uuid>@eva-test.com, test_nosync_*, test_cap_*, test_det_*, test_cap2_*). Each user auto-seeds 7 default categories + 'Travel Fund' default bucket. Test data persists in MongoDB after run (no destructive cleanup).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend URL env var is EXPO_PUBLIC_BACKEND_URL (not EXPO_BACKEND_URL). Pytest must be invoked with that env exported. The daily-cap test depends on UTC wall-clock — if it ever fails intermittently and the failure mode is 'two saved Coffee events instead of one saved + one skipped', check whether Starbucks (i=0) and Costa (i=6) computed transacted_at values cross a calendar-day boundary. Suggested fix in action_items.",
+  "rca_of_issue": "Iteration-2 RCA was correct and the fix landed as described: (a) tax_event docs now persist 'transacted_at' (server.py:644 - `\"transacted_at\": ensure_aware(tx['transacted_at'])`); (b) the daily-cap $match aggregation in /api/tax/process now uses {transacted_at: {$gte: day_start, $lt: day_end}} (server.py:597), aligning the cap window with the same calendar-day key already used by daily_repetition_counters; (c) _stub_spuerkeess() is now deterministic per second via `day_key = now.strftime('%Y%m%d%H%M%S')` with no random.randint (server.py:479-498). All three behaviour changes verified by tests."
+}

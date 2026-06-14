@@ -472,8 +472,11 @@ def _parse_revolut(items: list) -> list:
 
 
 def _stub_spuerkeess() -> list:
-    """Deterministic-ish fake transactions for Spuerkeess (no real PSD2 sandbox)."""
+    """Deterministic fake transactions for Spuerkeess (no real PSD2 sandbox)."""
     now = datetime.now(timezone.utc)
+    # Each sync produces a fresh batch with provider_txn_id keyed on the day,
+    # so dedup works inside a day but re-running on a new day pulls fresh tx.
+    day_key = now.strftime("%Y%m%d%H%M%S")
     samples = [
         ("Starbucks Luxembourg-Ville", 4.80, 1),
         ("Cactus Belair", 38.20, 6),
@@ -485,11 +488,11 @@ def _stub_spuerkeess() -> list:
     ]
     return [
         {
-            "provider_txn_id": f"spk_{i}_{int(now.timestamp())}",
+            "provider_txn_id": f"spk_{i}_{day_key}",
             "merchant_name": m,
             "amount": amt,
             "currency": "EUR",
-            "transacted_at": now - timedelta(days=days, minutes=random.randint(0, 600)),
+            "transacted_at": now - timedelta(days=days, minutes=(i * 47) % 600),
         }
         for i, (m, amt, days) in enumerate(samples)
     ]
@@ -580,7 +583,9 @@ async def tax_process(user=Depends(current_user)):
         counter = await db.daily_repetition_counters.find_one(counter_key)
         hit_count = counter["hit_count"] if counter else 0
 
-        # Daily cap check across already-taxed events today for this category.
+        # Daily cap check across already-taxed events that occurred on the same
+        # *transaction day*. (We key the cap on transacted_at, not created_at,
+        # so back-dated rows from a fresh sync still respect the cap.)
         day_start = ensure_aware(tx["transacted_at"]).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
@@ -589,7 +594,7 @@ async def tax_process(user=Depends(current_user)):
             {"$match": {
                 "user_id": user["id"], "category_id": cat["id"],
                 "status": {"$in": ["pending", "transferred"]},
-                "created_at": {"$gte": day_start, "$lt": day_end},
+                "transacted_at": {"$gte": day_start, "$lt": day_end},
             }},
             {"$group": {"_id": None, "sum": {"$sum": "$tax_amount"}}},
         ]).to_list(1)
@@ -636,6 +641,7 @@ async def tax_process(user=Depends(current_user)):
             "repetition_number": hit_count + 1,
             "status": "pending",
             "override_reason": None,
+            "transacted_at": ensure_aware(tx["transacted_at"]),
             "created_at": now,
         })
         # Increment daily counter.
