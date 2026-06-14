@@ -276,25 +276,47 @@ export default function Dashboard() {
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.actMerchant} numberOfLines={1}>{a.merchant_name}</Text>
-                      <Text style={styles.actMeta}>
+                      <Text style={styles.actMeta} numberOfLines={1}>
                         {a.category_name ?? "Unmatched"}
-                        {a.repetition_number > 1 ? ` · repeat #${a.repetition_number}` : ""}
+                        {a.source_label ? ` · ${a.source_label}` : ""}
                         {a.tax_rate_applied > 0 ? ` · ${Math.round(a.tax_rate_applied * 100)}%` : ""}
                       </Text>
-                      <View style={[styles.statusBadge, statusStyle]} testID={`act-status-${a.raw_txn_id}`}>
-                        <Text style={styles.statusBadgeText}>
-                          {a.status === "saved" ? "Saved" :
-                            a.status === "overridden" ? "Overridden" :
-                            a.status === "skipped" ? "Skipped — cap reached" :
-                            a.status === "unmatched" ? "Unmatched" : "Pending"}
-                        </Text>
-                      </View>
-                      {a.profile_applied && a.profile_applied !== "balanced" ? (
-                        <View style={styles.profileBadge} testID={`act-profile-${a.raw_txn_id}`}>
-                          <Text style={styles.profileBadgeText}>
-                            {PROFILE_LABEL[a.profile_applied]?.replace(" mode", "") ?? a.profile_applied}
+                      <View style={styles.badgeRow}>
+                        <View style={[styles.statusBadge, statusStyle]} testID={`act-status-${a.raw_txn_id}`}>
+                          <Text style={styles.statusBadgeText}>
+                            {a.status === "saved" ? "Saved" :
+                              a.status === "overridden" ? "Overridden" :
+                              a.status === "skipped" ? "Skipped — cap reached" :
+                              a.status === "unmatched" ? "Unmatched" : "Pending"}
                           </Text>
                         </View>
+                        {a.requires_review ? (
+                          <View style={[styles.statusBadge, styles.status_review]} testID={`act-review-${a.raw_txn_id}`}>
+                            <Text style={styles.statusBadgeText}>Needs review</Text>
+                          </View>
+                        ) : a.transfer_status === "executed" ? (
+                          <View style={[styles.statusBadge, styles.status_transferred]} testID={`act-transfer-${a.raw_txn_id}`}>
+                            <Text style={styles.statusBadgeText}>
+                              Transferred{a.transfer_provider_ref ? ` · ${a.transfer_provider_ref.slice(0, 12)}` : ""}
+                            </Text>
+                          </View>
+                        ) : a.transfer_status === "pending" && a.tax_event_id ? (
+                          <View style={[styles.statusBadge, styles.status_pending]} testID={`act-pending-${a.raw_txn_id}`}>
+                            <Text style={styles.statusBadgeText}>Awaiting transfer</Text>
+                          </View>
+                        ) : null}
+                        {a.profile_applied && a.profile_applied !== "balanced" ? (
+                          <View style={styles.profileBadge} testID={`act-profile-${a.raw_txn_id}`}>
+                            <Text style={styles.profileBadgeText}>
+                              {PROFILE_LABEL[a.profile_applied]?.replace(" mode", "") ?? a.profile_applied}
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      {a.destination_label ? (
+                        <Text style={styles.destLine} numberOfLines={1}>
+                          → {a.destination_label}{a.destination_currency ? ` · ${a.destination_currency}` : ""}
+                        </Text>
                       ) : null}
                     </View>
                     <View style={{ alignItems: "flex-end", gap: spacing.xs }}>
@@ -399,8 +421,13 @@ const styles = StyleSheet.create({
   status_overridden: { backgroundColor: colors.surfaceTertiary },
   status_unmatched: { backgroundColor: colors.surfaceTertiary },
   status_pending: { backgroundColor: colors.surfaceTertiary },
+  status_transferred: { backgroundColor: colors.brand },
+  status_review: { backgroundColor: "#E7C39A" },
 
-  profileBadge: { alignSelf: "flex-start", paddingHorizontal: spacing.sm, paddingVertical: 2, borderRadius: radius.pill, marginTop: 4, backgroundColor: colors.surfaceInverse },
+  badgeRow: { flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 4 },
+  destLine: { fontFamily: fonts.body, fontSize: 11, color: colors.onSurfaceSecondary, marginTop: 4 },
+
+  profileBadge: { paddingHorizontal: spacing.sm, paddingVertical: 2, borderRadius: radius.pill, backgroundColor: colors.surfaceInverse },
   profileBadgeText: { fontFamily: fonts.bodyMedium, fontSize: 10, color: colors.onSurfaceInverse, letterSpacing: 0.3 },
 
   overrideBtn: { paddingHorizontal: spacing.md, height: 30, borderRadius: radius.pill, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center" },

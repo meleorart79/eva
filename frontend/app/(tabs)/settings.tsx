@@ -20,10 +20,10 @@ const PROFILES: { key: ProfileKey; name: string; desc: string; intensity: number
   { key: "savings_beast", name: "Savings Beast", desc: "Aggressive taxes + automatic transfers whenever your pot exceeds €5. Money moves constantly.", intensity: 5 },
 ];
 
-const FREQS: { key: FreqKey; name: string; comingSoon?: boolean }[] = [
-  { key: "instant", name: "Instant" },
-  { key: "daily", name: "Daily", comingSoon: true },
-  { key: "weekly", name: "Weekly", comingSoon: true },
+const FREQS: { key: FreqKey; name: string; sub: string }[] = [
+  { key: "instant", name: "Instant", sub: "After every detection" },
+  { key: "daily", name: "Daily", sub: "Bundled overnight" },
+  { key: "weekly", name: "Weekly", sub: "Once a week" },
 ];
 
 const PROVIDER_LABEL: Record<string, string> = {
@@ -165,7 +165,7 @@ export default function SettingsScreen() {
               <Text style={styles.sectionLabel}>Transfer timing</Text>
               <View style={styles.freqRow}>
                 {FREQS.map((f) => {
-                  const active = settings.transfer_frequency === f.key && !f.comingSoon;
+                  const active = settings.transfer_frequency === f.key;
                   return (
                     <Pressable
                       key={f.key}
@@ -174,10 +174,33 @@ export default function SettingsScreen() {
                       testID={`freq-${f.key}`}
                     >
                       <Text style={[styles.freqText, active && styles.freqTextActive]}>{f.name}</Text>
+                      <Text style={[styles.freqSub, active && styles.freqSubActive]}>{f.sub}</Text>
                     </Pressable>
                   );
                 })}
               </View>
+            </View>
+
+            <View style={{ gap: spacing.sm }}>
+              <Text style={styles.sectionLabel}>Savings destinations</Text>
+              <Pressable
+                onPress={() => router.push("/destinations")}
+                style={styles.bankRowEmpty}
+                testID="settings-destinations"
+              >
+                <Feather name="archive" size={18} color={colors.onSurface} />
+                <Text style={styles.bankRowText}>Manage destinations</Text>
+                <Feather name="chevron-right" size={18} color={colors.muted} />
+              </Pressable>
+              <Pressable
+                onPress={() => router.push("/monthly-resume")}
+                style={styles.bankRowEmpty}
+                testID="settings-monthly-resume"
+              >
+                <Feather name="file-text" size={18} color={colors.onSurface} />
+                <Text style={styles.bankRowText}>Monthly resume (export)</Text>
+                <Feather name="chevron-right" size={18} color={colors.muted} />
+              </Pressable>
             </View>
 
             <View style={{ gap: spacing.sm }}>
@@ -284,10 +307,12 @@ const styles = StyleSheet.create({
 
   sectionLabel: { fontFamily: fonts.bodyMedium, fontSize: type.sm, color: colors.onSurfaceSecondary, letterSpacing: 0.5, textTransform: "uppercase" },
   freqRow: { flexDirection: "row", gap: spacing.sm },
-  freqChip: { flex: 1, height: 48, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
+  freqChip: { flex: 1, height: 64, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center", gap: 2 },
   freqChipActive: { backgroundColor: colors.surfaceInverse, borderColor: colors.surfaceInverse },
   freqText: { fontFamily: fonts.bodyMedium, fontSize: type.base, color: colors.onSurface },
   freqTextActive: { color: colors.onSurfaceInverse },
+  freqSub: { fontFamily: fonts.body, fontSize: 10, color: colors.onSurfaceSecondary, letterSpacing: 0.3 },
+  freqSubActive: { color: "rgba(247,245,242,0.7)" },
 
   bankRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
   bankRowEmpty: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.lg, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, borderStyle: "dashed" },

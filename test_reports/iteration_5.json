@@ -1,0 +1,53 @@
+{
+  "summary": "Iteration 5 backend tests: 20/20 new tests pass + 48/50 prior tests pass (68/70 overall). Verified: (1) Default Revolut pocket auto-seeded on register (type=revolut_pocket, label='Default Savings Pocket', is_default=true, currency matches user). (2) Destinations CRUD with currency validation (USD rejected with 400 for EUR user, EUR accepted), PATCH is_default unsets others, DELETE soft-disables (is_active=false) and promotes another to default. (3) linked_accounts.connected_at is set on direct-token Spuerkeess link; first sync ingested=7 / skipped_retroactive=0 / duplicates=0; second sync ingested=0 / duplicates=7. All stubbed transacted_at values are strictly > connected_at (post-connection rule holds). (4) raw_transactions and tax_events both persist source_account_id, source_label, source_type, source_currency — also surfaced on /api/activity rows. (5) Tax engine attaches destination_id/label/currency from active default destination; requires_review=false when source+destination+currency align. (6) Deleting the only destination then processing yields requires_review=true with review_reason='no_destination' and transfer_status='requires_review'; these events are skipped by _execute_transfers (instant_transfer either absent or transferred=0). (7) Grouped transfer logic produced exactly 2 transfer groups for the stub's 2 source accounts (spk_main + spk_card_1234) under instant frequency, distinct provider_refs starting with 'sim_', status='executed' per group. (8) tax_transfers docs have status='simulated', provider_ref='sim_<hex>', trigger in allowed set, source_account_id, destination_id, destination_label, destination_currency, tax_event_ids[], total_amount. (9) Transferred tax_events flip to status='transferred' AND transfer_status='executed' AND carry transfer_id (uuid) and transfer_provider_ref. (10) Scheduler: switching to daily disables instant auto-fire; POST /api/scheduler/run manual run executes transfers and bumps transfer_last_run_at. (11) Monthly report JSON includes totals{spent,taxed,events,overridden,requires_review}, by_category[], by_profile[], by_destination[], by_transfer_status[], events[]; month=0 and month=13 return 400. (12) CSV export returns Content-Type text/csv with attachment Content-Disposition and the exact header row 'transacted_at,merchant,category,amount,currency,profile,tax_rate,tax_amount,source_label,destination_label,transfer_status,transfer_provider_ref,status'. (13) Legacy /api/tax/transfer delegates to _execute_transfers and returns {transferred, total_amount} shape. (14) GET /api/settings now exposes transfer_last_run_at (nullable).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "_stub_spuerkeess(connected_at) — sync test design",
+        "issue": "The spec's test 'shift connected_at forward to future, re-sync, expect ingested=0 / skipped_retroactive=7' is NOT achievable with the current stub because _stub_spuerkeess generates timestamps as `connected_at + N minutes`. When you shift connected_at forward, the stub's generated timestamps shift forward with it and remain > connected_at, so they all pass the filter. The filter logic itself (`tx_ts <= connected_at` skipped) is correct and verified at the normal boundary (skipped_retroactive=0 on first sync, all stubbed txns strictly > connected_at). Either: (a) change the stub to use a fixed wall-clock anchor (e.g., datetime.now()) so the future-connected_at test scenario becomes meaningful, OR (b) revise the spec's retroactivity test to inject raw_transactions directly with pre-connection timestamps. Reference: /app/backend/server.py:836-862 (stub) and /app/backend/server.py:884-944 (sync filter). The boundary-direct test in iteration_5 (test_filter_boundary_directly + test_stub_timestamps_post_connection) replaces the impossible scenario with a meaningful one.",
+        "priority": "LOW"
+      },
+      {
+        "endpoint": "Pre-existing tests test_transfer_marks_pending_transferred (test_eva_backend.py:333) and test_get_settings_defaults (test_iteration4.py:84)",
+        "issue": "Both fail under iteration-5 behavior. (a) test_transfer_marks_pending_transferred expects pending events available when calling /api/tax/transfer, but with default transfer_frequency='instant' the events are already auto-transferred during /api/tax/process, so the explicit transfer returns 0. (b) test_get_settings_defaults uses exact dict equality and didn't include the newly-added transfer_last_run_at key. The spec explicitly warned 'some assertions about the OLD stub may have changed'. Recommend: update those two assertions to (a) switch user to weekly/daily before calling /api/tax/transfer, and (b) loosen dict comparison to subset/key checks."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration5.py",
+    "/app/test_reports/pytest/iteration_5.xml",
+    "/app/test_reports/pytest/iteration_5_full.xml"
+  ],
+  "action_items": [
+    "Decide whether to update _stub_spuerkeess to use a fixed wall-clock anchor (so 'shift connected_at forward' becomes demonstrable), or leave as-is and revise the spec's retroactivity test description.",
+    "Update test_eva_backend.py::test_transfer_marks_pending_transferred to set transfer_frequency='weekly' (or 'daily') BEFORE /api/tax/process so the explicit /api/tax/transfer has events to flush; otherwise the instant auto-fire empties the queue.",
+    "Update test_iteration4.py::test_get_settings_defaults to assert subset of keys (or drop exact == comparison) since SettingsOut now includes transfer_last_run_at.",
+    "Optional: reports_monthly() currently runs _monthly_data then immediately re-fetches tax_events to enrich merchant names — could be refactored to a single query for performance, but functionally correct."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 1608 lines (>700 threshold). Consider splitting into modules: auth, destinations, bank, tax_engine, transfers, scheduler, reports.",
+    "reports_monthly() at /app/backend/server.py:1513-1560 builds the events list twice (once in _monthly_data, then overwrites it via a re-query). Functionally correct but wasteful; consider passing rid_map down into _monthly_data instead.",
+    "The on_event('startup') scheduler loop starts an unbounded asyncio task without cancellation tracking on shutdown — minor but worth a TODO.",
+    "_match_category still routes Ethical Penalty keywords first for ALL profiles (carry-over from iteration 4); McDonalds is still categorised as 'Ethical Penalty' (not 'Fast Food') under balanced/aggressive/mindful. Pre-existing finding, not a regression.",
+    "_validate_destination_currency() permits creating a destination in any currency that ANY active linked account claims as primary_currency, but linked_accounts seeded via stub always set primary_currency='EUR'. So in practice only the user's EUR matches today — fine but worth tracking when more providers / currencies are added."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration5.py (new)"
+  ],
+  "success_rate": {
+    "backend": "97.1% (68/70 — 20/20 new + 48/50 prior; 2 prior failures are spec-acknowledged assertion drift, not code regressions)",
+    "frontend": "n/a (backend-only review)"
+  },
+  "seed_data_creation": "Tests register their own ephemeral TEST_-prefixed users per class. No shared seed data; each user gets fresh categories + default bucket + default revolut_pocket destination via /api/auth/register.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 5 passes 20/20 new tests and 48/50 pre-existing tests. Two pre-existing test assertions need a small bump: (1) test_eva_backend.py::test_transfer_marks_pending_transferred must set transfer_frequency to weekly/daily before /api/tax/process to prevent instant auto-transfer from emptying pending events. (2) test_iteration4.py::test_get_settings_defaults must accommodate the new transfer_last_run_at key. Beyond those, the iteration-5 surface — destinations CRUD, source-aware tax events, grouped transfers, instant/scheduler triggers, monthly+CSV reports, requires_review surfacing — all behaves to spec. Be aware: _stub_spuerkeess generates txns at connected_at + 5..300 minutes, so any test trying to demonstrate retroactive-skip by shifting connected_at forward will fail (test_filter_boundary_directly is the working substitute).",
+  "rca_of_issue": "N/A — no production bugs. Two pre-existing test assertions broke due to documented spec changes (auto-instant-transfer + new SettingsOut field). One spec test ('shift connected_at forward') is impossible by stub design — RCA documented above under backend_issues.minor."
+}
