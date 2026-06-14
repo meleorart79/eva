@@ -86,3 +86,5 @@ android-sdk/
 credentials.json
 *.key
 .credentials
+.vs/
+eva_dump.txt
