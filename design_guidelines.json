@@ -1,0 +1,162 @@
+{
+  "app_name": "Éva",
+  "personality": "Fusion: 1 iOS-Native Clean structure with 8 Hand-Drawn palette",
+  "personality_one_liner": "A mindful, restorative environment that transforms financial tradeoffs into calm, guilt-free growth using warm earth tones and clear editorial hierarchy.",
+  "color": {
+    "surface": "#F7F5F2",
+    "onSurface": "#282624",
+    "surfaceSecondary": "#EBE7E0",
+    "onSurfaceSecondary": "#3E3B37",
+    "surfaceTertiary": "#DFD9CF",
+    "onSurfaceTertiary": "#4A4742",
+    "surfaceInverse": "#282624",
+    "onSurfaceInverse": "#F7F5F2",
+    "brand": "#7B8C73",
+    "brandPrimary": "#7B8C73",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#C2A888",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#D9E0D5",
+    "onBrandTertiary": "#282624",
+    "success": "#728A6D",
+    "onSuccess": "#FFFFFF",
+    "warning": "#D4A373",
+    "onWarning": "#FFFFFF",
+    "error": "#C27D72",
+    "onError": "#FFFFFF",
+    "info": "#8E9CA3",
+    "onInfo": "#FFFFFF",
+    "border": "#DCD7CE",
+    "borderStrong": "#BDB6A8",
+    "divider": "#DCD7CE"
+  },
+  "typography": {
+    "displayFontFamily": "Fraunces",
+    "textFontFamily": "DM Sans",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous vertical breathing room. Cards and sections padded comfortably to reflect mindfulness. No dense dashboard cramming.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": 0,
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": false,
+    "do's": [
+      "Use solid surfaceSecondary or brandTertiary for elevation since glass clashes with the organic, earth-tone Hand-drawn aesthetic."
+    ],
+    "dont's": [
+      "No blur effects or glassmorphism on this app. Stick to matte, tactile colors."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "solid surfaceSecondary",
+      "android": "solid surfaceSecondary",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Onboarding",
+      "purpose": "Introduce the Behavior Tax concept gracefully and gather initial currency/auth details.",
+      "states": {
+        "loading": "Centered brand-colored spinner.",
+        "empty": "N/A",
+        "error": "Soft inline error message in red terracotta."
+      },
+      "layout": "Full-bleed hero image (lush plant) with a top-to-bottom transparent-to-surfaceInverse scrim. The bottom 40% houses a Fraunces heading, soft subtitle, and the primary 'Get Started' CTA pinned to the bottom."
+    },
+    {
+      "name": "Dashboard",
+      "purpose": "Provide a serene overview of total saved via tax, current streak, and recent spending.",
+      "states": {
+        "loading": "Skeleton loaders matching card dimensions.",
+        "empty": "Illustration of a seed sprouting with 'Log your first transaction to start growing your savings.'",
+        "error": "Retry button centered with 'Unable to load dashboard'."
+      },
+      "layout": "Single column scroll. Top section: Large 'Total Saved' typography card with a soft brandTertiary background. Below it, a horizontal row for 'Impulse-free Streak' badges. Finally, a 'Recent Transactions' list. A sticky FAB in the bottom right for 'Add Transaction'."
+    },
+    {
+      "name": "Add Transaction",
+      "purpose": "Quickly log an expense and instantly visualize its 'tax' and impact on goals.",
+      "states": {
+        "loading": "Saving spinner on the primary button.",
+        "empty": "N/A",
+        "error": "Toast with error message."
+      },
+      "layout": "Form-first UI. Huge numeric input for Amount at the top. Wrap category selection in scrollable chips. Real-time 'Goal Impact Analysis' card at the bottom of the scroll view (e.g., 'Adds €2 to Travel Fund'). Sticky primary 'Save Expense' CTA anchored at the bottom."
+    },
+    {
+      "name": "Savings Buckets",
+      "purpose": "Track progress towards individual financial goals (Emergency, Travel, Investment).",
+      "states": {
+        "loading": "Skeleton cards.",
+        "empty": "Empty state illustration of a piggy bank with 'Create your first savings goal.'",
+        "error": "Retry button."
+      },
+      "layout": "Single-column list of large cards. Each card uses a background image (e.g., Ocean for Travel) with a required gradient scrim. Progress bar and '€X of €Y' clearly legible over the scrim in the bottom-left of the card."
+    },
+    {
+      "name": "Insights & Future Value",
+      "purpose": "Visualize long-term savings projections and weekly spending habits.",
+      "states": {
+        "loading": "Skeleton chart.",
+        "empty": "Message: 'Keep logging expenses to unlock your weekly insights.'",
+        "error": "Retry button."
+      },
+      "layout": "Chart at the top. Below, a Future Value Visualizer card with two sliders (Years and Interest Rate) adjusting a large projected total. Clean layout with no heavy shadows, utilizing divider lines for separation."
+    }
+  ],
+  "images": {
+    "hero_onboarding_bg": {
+      "url": "https://images.pexels.com/photos/24416176/pexels-photo-24416176.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "dark": "https://images.pexels.com/photos/30752172/pexels-photo-30752172.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Lush green foliage representing growth"
+    },
+    "travel_goal_bg": {
+      "url": "https://images.pexels.com/photos/34480294/pexels-photo-34480294.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "dark": "https://images.pexels.com/photos/5313383/pexels-photo-5313383.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Vibrant turquoise ocean waves"
+    },
+    "category_coffee_expense": {
+      "url": "https://images.pexels.com/photos/26985929/pexels-photo-26985929.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Elegant white coffee mug"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the color palette. The user explicitly requested 'soft earth tones'. There should be absolutely ZERO blue or purple anywhere in the app.",
+    "Implement the 'Goal Impact Analysis' card securely on the 'Add Transaction' screen. It should reactively calculate the configured tax amount for the selected category and display how it impacts the default savings bucket.",
+    "Images MUST use the mandatory gradient-to-dark scrim pattern (transparent to >=70% surfaceInverse) to guarantee foreground text readability.",
+    "Use Fraunces (weight 400 or 500 max) for headings to give an editorial, mindful feel, and DM Sans for data and body copy.",
+    "Do NOT use glassmorphism or blur effects. This aesthetic is grounded, earthy, and matte. Use solid `surfaceSecondary` or `surfaceTertiary` colors for elevated components.",
+    "All primary CTAs over scrolling content must be sticky at the bottom, sitting above the safe area, using a solid background, not transparent.",
+    "Do not use generic Material FABs. Use a styled custom button with the Phosphor icon set.",
+    "Include a functional Future Value Visualizer with sliders for 'Years' and 'Interest' that dynamically update the projected savings value based on the total saved amount."
+  ]
+}
