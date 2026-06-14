@@ -22,7 +22,13 @@ export default function Categories() {
     setItems((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
 
   const save = async (c: Category) => {
-    await api.updateCategory(c.id, { name: c.name, icon: c.icon, tax_rate: c.tax_rate });
+    await api.updateCategory(c.id, {
+      name: c.name, icon: c.icon, tax_rate: c.tax_rate,
+      merchant_keywords: c.merchant_keywords ?? [],
+      rep_increment: c.rep_increment ?? 0.05,
+      max_tax_rate: c.max_tax_rate ?? 0.50,
+      daily_cap_amount: c.daily_cap_amount ?? 10.0,
+    });
   };
 
   const remove = async (id: string) => {
@@ -31,7 +37,11 @@ export default function Categories() {
   };
 
   const addNew = async () => {
-    const created = await api.createCategory({ name: "New category", icon: "tag", tax_rate: 0.1 });
+    const created = await api.createCategory({
+      name: "New category", icon: "tag", tax_rate: 0.1,
+      merchant_keywords: [], rep_increment: 0.05,
+      max_tax_rate: 0.50, daily_cap_amount: 10.0,
+    });
     setItems((p) => [...p, created]);
   };
 
@@ -75,6 +85,17 @@ export default function Categories() {
                 <Feather name="trash-2" size={18} color={colors.error} />
               </Pressable>
             </View>
+            {c.merchant_keywords && c.merchant_keywords.length > 0 ? (
+              <View style={styles.kwRow}>
+                {c.merchant_keywords.map((kw) => (
+                  <View key={kw} style={styles.kwChip} testID={`cat-kw-${c.id}-${kw}`}>
+                    <Text style={styles.kwText}>{kw}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <Text style={styles.kwEmpty}>No merchant keywords · this category never auto-matches.</Text>
+            )}
           </View>
         ))}
 
@@ -95,4 +116,8 @@ const styles = StyleSheet.create({
   rateLabel: { fontFamily: fonts.body, fontSize: type.sm, color: colors.onSurfaceSecondary },
   rateInput: { flex: 1, height: 40, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.border, paddingHorizontal: spacing.md, fontFamily: fonts.bodyMedium, fontSize: type.base, color: colors.onSurface },
   delete: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
+  kwRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs, marginTop: spacing.xs },
+  kwChip: { paddingHorizontal: spacing.sm, paddingVertical: 4, borderRadius: radius.pill, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
+  kwText: { fontFamily: fonts.body, fontSize: type.sm, color: colors.onSurfaceSecondary },
+  kwEmpty: { fontFamily: fonts.body, fontSize: type.sm, color: colors.muted, fontStyle: "italic", marginTop: spacing.xs },
 });

@@ -16,6 +16,10 @@ export type Category = {
   name: string;
   icon: string;
   tax_rate: number;
+  merchant_keywords: string[];
+  rep_increment: number;
+  max_tax_rate: number;
+  daily_cap_amount: number;
 };
 
 export type Bucket = {
@@ -27,18 +31,28 @@ export type Bucket = {
   is_default: boolean;
 };
 
-export type Transaction = {
+export type LinkedAccount = {
   id: string;
-  merchant: string;
+  provider: "revolut" | "spuerkeess";
+  is_active: boolean;
+  linked_at: string;
+};
+
+export type ActivityRow = {
+  raw_txn_id: string;
+  merchant_name: string;
   amount: number;
-  category_id: string;
-  category_name: string;
-  tax_rate: number;
+  currency: string;
+  transacted_at: string;
+  category_id?: string | null;
+  category_name?: string | null;
+  tax_event_id?: string | null;
   tax_amount: number;
-  bucket_id: string;
-  bucket_name: string;
-  note?: string | null;
-  created_at: string;
+  tax_rate_applied: number;
+  repetition_number: number;
+  status: "saved" | "skipped" | "overridden" | "unmatched" | "pending";
+  created_at?: string | null;
+  can_override: boolean;
 };
 
 export type Summary = {
@@ -113,15 +127,27 @@ export const api = {
     req<Bucket>(`/buckets/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteBucket: (id: string) => req<{ ok: boolean }>(`/buckets/${id}`, { method: "DELETE" }),
 
-  transactions: (limit = 100) => req<Transaction[]>(`/transactions?limit=${limit}`),
-  createTransaction: (data: {
-    merchant: string;
-    amount: number;
-    category_id: string;
-    note?: string;
-    bucket_id?: string;
-  }) => req<Transaction>("/transactions", { method: "POST", body: JSON.stringify(data) }),
-  deleteTransaction: (id: string) => req<{ ok: boolean }>(`/transactions/${id}`, { method: "DELETE" }),
+  // Bank linking
+  linkBank: (provider: "revolut" | "spuerkeess", access_token: string) =>
+    req<LinkedAccount>("/bank/link", { method: "POST", body: JSON.stringify({ provider, access_token }) }),
+  listAccounts: () => req<LinkedAccount[]>("/bank/accounts"),
+  unlinkBank: (id: string) => req<{ ok: boolean }>(`/bank/accounts/${id}`, { method: "DELETE" }),
+  syncBank: () =>
+    req<{ ingested: number; duplicates: number; accounts: number }>(`/bank/sync`, { method: "POST" }),
 
+  // Tax engine
+  processTax: () =>
+    req<{ processed: number; taxed: number; skipped: number; unmatched: number }>(
+      `/tax/process`, { method: "POST" }
+    ),
+  overrideTax: (event_id: string) =>
+    req<{ ok: boolean }>(`/tax/override/${event_id}`, { method: "POST" }),
+  transferTax: () =>
+    req<{ transferred: number; total_amount: number; transfer_id?: string }>(
+      `/tax/transfer`, { method: "POST" }
+    ),
+
+  // Activity / insights
+  activity: (limit = 100) => req<ActivityRow[]>(`/activity?limit=${limit}`),
   summary: () => req<Summary>("/insights/summary"),
 };

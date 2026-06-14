@@ -62,6 +62,12 @@ export default function Profile() {
         </View>
       </View>
 
+      <Pressable onPress={() => router.push("/link-bank")} style={styles.linkRow} testID="profile-link-bank">
+        <Feather name="link" size={20} color={colors.onSurface} />
+        <Text style={styles.linkText}>Connect another bank</Text>
+        <Feather name="chevron-right" size={20} color={colors.muted} />
+      </Pressable>
+
       <Pressable onPress={() => router.push("/categories")} style={styles.linkRow} testID="profile-link-categories">
         <Feather name="tag" size={20} color={colors.onSurface} />
         <Text style={styles.linkText}>Manage categories & tax rates</Text>

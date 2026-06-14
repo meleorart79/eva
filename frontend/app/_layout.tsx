@@ -45,7 +45,7 @@ export default function RootLayout() {
             <Stack.Screen name="(auth)" />
             <Stack.Screen name="(tabs)" />
             <Stack.Screen
-              name="add-transaction"
+              name="link-bank"
               options={{ presentation: "modal", animation: "slide_from_bottom" }}
             />
             <Stack.Screen

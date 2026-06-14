@@ -1,0 +1,62 @@
+{
+  "summary": "Backend-only testing for Éva architectural pivot (bank link + sync + tax engine + override + transfer + activity feed). 23/24 pytest cases pass (95.8%). Verified: 7 default categories with exact keyword spec, POST/PATCH category persists new fields (merchant_keywords, rep_increment, max_tax_rate, daily_cap_amount); bank linking returns no access_token in any GET; relinking same provider deactivates previous (1 active per provider per user); DELETE deactivates; sync with no accounts -> 400; first Spuerkeess sync ingests exactly 7 stub txs; rerun produces duplicates via provider_txn_id dedup; Revolut sync with bogus token surfaces 401/502 cleanly; tax engine matches keywords for all 7 stub merchants; Coffee repetition increases tax_rate_applied on the second event (Starbucks then Costa); override within 10-min window decrements bucket and 2nd override returns 400; unknown event -> 404; transfer marks pending->transferred and 2nd call returns 0; insights summary aggregates from tax_events (status pending/transferred) excluding overridden, returns total_spent/total_taxed/transactions/by_category/by_day/streak; legacy POST/GET /api/transactions return 404; bucket regression (default swap, cannot delete default) passes. ONE FAILURE: daily cap test — backend bug found in cap aggregation (see rca_of_issue).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/tax/process (daily cap logic)",
+        "issue": "Daily cap NEVER engages for back-dated transactions (Spuerkeess stub txs are dated 1-7 days ago). The cap aggregation in server.py:588-595 filters tax_events by `created_at` between day_start/day_end derived from tx.transacted_at, but newly-inserted tax_events have created_at=datetime.now() (today). So when processing yesterday's txs, the window=yesterday but events live in today -> taxed_today is always 0.0 -> cap never bites. Reproduced deterministically by setting Coffee daily_cap_amount=0.50, syncing Spuerkeess stub (Starbucks 4.80 + Costa 5.10, both dated days=1 ago), processing -> both end up 'saved' instead of one 'skipped'.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "_stub_spuerkeess()",
+        "issue": "Stub uses random.randint(0,600) minutes per tx so Coffee dates within a sync are non-deterministic. Currently both Coffee txs use days=1 so calendar-day collision happens consistently, but a small change in 'now' (around midnight) could spread them across days and break behavior tests. Consider seeding random or pinning minutes."
+      },
+      {
+        "endpoint": "PATCH /api/auth/me?default_bucket_id=...",
+        "issue": "Carry-over from iteration 1 — already documented. Not retested in this iteration."
+      },
+      {
+        "endpoint": "backend (passlib)",
+        "issue": "Carry-over: passlib bcrypt 'AttributeError: __about__' warning at first hash. Functional but noisy."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_eva_backend.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "FIX (critical): Change daily-cap aggregation to match tax_events by tx.transacted_at date instead of created_at. Two viable approaches: (a) store transacted_at on tax_event and match {transacted_at: {$gte: day_start, $lt: day_end}}, or (b) join through raw_transactions ($lookup) to filter by raw_tx.transacted_at. Simplest: copy raw_tx.transacted_at onto the tax_event document at insertion time (server.py:626-640) and switch the cap $match to use that field. Same fix applies to the daily_repetition_counters key — it already correctly uses tx.transacted_at's date, so only the cap aggregation is broken.",
+    "Make _stub_spuerkeess() deterministic (seed random or remove minute jitter) so cap and rep tests are repeatable in CI.",
+    "(Optional carry-over) Align PATCH /auth/me default_bucket_id semantics with POST/PATCH /buckets (flip is_default flags).",
+    "(Optional carry-over) Pin bcrypt or upgrade passlib to silence warning."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 862 lines — definitely time to split into routers (auth.py, categories.py, buckets.py, bank.py, tax.py, activity.py, insights.py) + a models.py and a services/ folder for the tax engine. Maintainability will degrade fast otherwise.",
+    "_fetch_revolut() raises HTTPException from a sync helper called via run_in_threadpool — works in FastAPI but couples the helper to web semantics. Better to raise a domain exception and translate in the route.",
+    "tax/process loop does an aggregate + 2-3 writes per transaction sequentially. For 500 pending txs this is N round-trips. Acceptable for MVP but flag for batching/bulk_write later.",
+    "Override window check uses ev.created_at — does not use raw_tx.transacted_at, which is correct. But there's no API to forcibly backdate a tax_event for testing the 'window passed' path; hard to assert in CI without DB write. Spec acknowledged this.",
+    "@app.on_event('shutdown') still deprecated (carry-over).",
+    "JWT_SECRET still has dev fallback (carry-over).",
+    "saved_amount on bucket can go negative if override decrements past 0 — no floor guard (carry-over).",
+    "Insights 'streak_days_no_impulse' is computed as days since last taxed event, not days since last 'impulse' (overridden vs taxed semantics blur). Verify the intended definition with product."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_eva_backend.py (rewritten end-to-end for bank/sync/tax/override/transfer flow)",
+    "/app/test_reports/pytest/pytest_results.xml (regenerated)"
+  ],
+  "success_rate": {"backend": "95.8% (23/24)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Each test run registers fresh users with email pattern test_<uuid>@eva-test.com (main, no-sync, cap). Each gets the default 7 categories + 'Travel Fund' bucket auto-seeded by /api/auth/register. Test users + their raw_transactions/tax_events/linked_accounts remain in MongoDB after run (no destructive cleanup). Test-created categories prefixed 'TEST_' and deleted in-test.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend URL env var is EXPO_PUBLIC_BACKEND_URL (not EXPO_BACKEND_URL). EmailStr rejects .test TLD so use .com. LinkedAccountIn.access_token has min_length=4 — short tokens 422. Spuerkeess stub provider_txn_id includes int(now.timestamp()), so two syncs within the same second dedupe; cross-second syncs re-ingest 7. To test 'override window passed' you must backdate ev.created_at directly in MongoDB (no API path). Daily cap bug RCA in rca_of_issue — when retesting after fix, run TestTaxEngine::test_daily_cap_skips_second_coffee.",
+  "rca_of_issue": "RCA — Daily cap not enforced for Spuerkeess stub data:\n  Reproduction: register fresh user; PATCH Coffee daily_cap_amount=0.50; POST /api/bank/link spuerkeess; POST /api/bank/sync (ingests 7); POST /api/tax/process; GET /api/activity -> Starbucks status=saved AND Costa status=saved. Expected: one saved, one skipped (since Coffee taxed_today after Starbucks = 0.50 = cap).\n  Root cause: server.py:584-595 builds day_start/day_end from `tx.transacted_at` (yesterday for stub) and aggregates tax_events filtered by `created_at` (= datetime.now() at processing time = today). The two timestamps live in different calendar days, so the aggregate always returns 0 sum for back-dated transactions, and the cap never bites. The daily_repetition_counters logic at line 578-580 correctly keys on tx.transacted_at's date, so repetition works (verified by passing rep test). Only the cap path is wrong.\n  Mitigation: At tax_event insertion (server.py line 626), also store `transacted_at: ensure_aware(tx['transacted_at'])`. Then in the cap aggregation, replace `created_at` window with `transacted_at` window. Alternatively use $lookup from raw_transactions. Minimum-diff fix is the first option (~3 lines)."
+}
