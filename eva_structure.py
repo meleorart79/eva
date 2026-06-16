@@ -6,14 +6,14 @@ OUTPUT_FILE = "eva_dump.txt"
 
 EXCLUDE_DIRS = {
     ".git", "__pycache__", "node_modules",
-    ".venv", "dist", "build", "apps", ".vs"
+    ".venv", "dist", "build", ".vs"
 }
 
 EXCLUDE_FILES = {OUTPUT_FILE}
 
 TEXT_EXTENSIONS = {
     ".py", ".js", ".ts", ".php",
-    ".html", ".css",
+    ".html", ".css", ".tsx",
     ".json", ".md", ".txt",
     ".yml", ".yaml", ".env", ".sql"
 }
@@ -75,6 +75,7 @@ def code_language(ext: str) -> str:
         ".yaml": "yaml",
         ".sql": "sql",
         ".md": "markdown",
+        ".tsx": "tsx",
     }.get(ext.lower(), "")
 
 

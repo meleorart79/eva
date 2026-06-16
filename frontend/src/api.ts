@@ -43,6 +43,7 @@ export type Settings = {
   profile_type: "balanced" | "aggressive" | "ethical" | "mindful" | "savings_beast";
   transfer_frequency: "instant" | "daily" | "weekly";
   pause_all_taxes: boolean;
+  apply_ethical_penalty_all_profiles: boolean;
   transfer_last_run_at?: string | null;
 };
 
@@ -169,6 +170,18 @@ export const api = {
     return req<User>(`/auth/me?${qs.toString()}`, { method: "PATCH" });
   },
 
+  resolveReview: (eventId: string, data: { action: "approve" | "change_destination"; destination_id?: string }) =>
+      req<{ ok: boolean }>(`/tax/events/${eventId}/resolve-review`, {
+          method: "POST",
+          body: JSON.stringify(data),
+      }),
+
+  registerPushToken: (data: { token: string }) =>
+      req<{ ok: boolean }>("/notifications/register", {
+          method: "POST",
+          body: JSON.stringify(data),
+      }),
+
   categories: () => req<Category[]>("/categories"),
   createCategory: (data: Omit<Category, "id">) =>
     req<Category>("/categories", { method: "POST", body: JSON.stringify(data) }),
@@ -218,14 +231,14 @@ export const api = {
 
   // Tax engine
   processTax: () =>
-    req<{ processed: number; taxed: number; skipped: number; unmatched: number }>(
+      req<{ processed: number; taxed: number; skipped: number; unmatched: number; taxed_details: { merchant_name: string; category_name: string; tax_amount: number }[] }>(
       `/tax/process`, { method: "POST" }
     ),
   overrideTax: (event_id: string) =>
     req<{ ok: boolean }>(`/tax/override/${event_id}`, { method: "POST" }),
   transferTax: () =>
     req<{ transferred: number; total_amount: number; transfer_id?: string }>(
-      `/tax/transfer`, { method: "POST" }
+        `/tax/transfer`, { method: "POST" }
     ),
 
   // Activity / insights

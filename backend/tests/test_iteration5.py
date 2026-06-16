@@ -386,6 +386,8 @@ class TestSettingsShape:
         r = user_ctx["sess"].get(f"{API}/settings")
         assert r.status_code == 200
         body = r.json()
+        expected = {"profile_type": "balanced", "transfer_frequency": "instant", "pause_all_taxes": False}
+        assert {k: body[k] for k in expected} == expected
         assert "transfer_last_run_at" in body
         # Either None or string
         assert body["transfer_last_run_at"] is None or isinstance(body["transfer_last_run_at"], str)

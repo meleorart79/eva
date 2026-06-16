@@ -1,10 +1,18 @@
 import React, { useCallback, useState } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Animated, Easing,
+    View,
+    Text,
+    StyleSheet,
+    ScrollView,
+    Pressable,
+    ActivityIndicator,
+    Animated,
+    Easing,
+    Switch,
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "@expo/vector-icons";  
 
 import { api, LinkedAccount, Settings } from "@/src/api";
 import { colors, fonts, radius, spacing, type } from "@/src/theme";
@@ -12,328 +20,337 @@ import { colors, fonts, radius, spacing, type } from "@/src/theme";
 type ProfileKey = Settings["profile_type"];
 type FreqKey = Settings["transfer_frequency"];
 
-const PROFILES: { key: ProfileKey; name: string; desc: string; intensity: number }[] = [
-  { key: "balanced", name: "Balanced", desc: "Steady taxes at your configured rates. A calm, sustainable approach.", intensity: 2 },
-  { key: "aggressive", name: "Aggressive", desc: "1.5× on every tax. Maximum financial friction on every impulse.", intensity: 5 },
-  { key: "ethical", name: "Ethical", desc: "Higher taxes on fast food, fast fashion, and corporate brands. Vote with your wallet.", intensity: 3 },
-  { key: "mindful", name: "Mindful", desc: "Half-rate taxes. Gentle nudges, not punishment.", intensity: 1 },
-  { key: "savings_beast", name: "Savings Beast", desc: "Aggressive taxes + automatic transfers whenever your pot exceeds €5. Money moves constantly.", intensity: 5 },
-];
+const PROFILES: {
+    key: ProfileKey;
+    name: string;
+    desc: string;
+    intensity: number;
+}[] = [
+        {
+            key: "balanced",
+            name: "Balanced",
+            desc: "Steady taxes at your configured rates. A calm, sustainable approach.",
+            intensity: 2,
+        },
+        {
+            key: "aggressive",
+            name: "Aggressive",
+            desc: "1.5× on every tax. Maximum financial friction on every impulse.",
+            intensity: 5,
+        },
+        {
+            key: "ethical",
+            name: "Ethical",
+            desc: "Higher taxes on fast food, fast fashion, and corporate brands.",
+            intensity: 3,
+        },
+        {
+            key: "mindful",
+            name: "Mindful",
+            desc: "Half-rate taxes. Gentle nudges, not punishment.",
+            intensity: 1,
+        },
+        {
+            key: "savings_beast",
+            name: "Savings Beast",
+            desc: "Aggressive taxes + automatic transfers whenever your pot exceeds €5.",
+            intensity: 5,
+        },
+    ];
 
 const FREQS: { key: FreqKey; name: string; sub: string }[] = [
-  { key: "instant", name: "Instant", sub: "After every detection" },
-  { key: "daily", name: "Daily", sub: "Bundled overnight" },
-  { key: "weekly", name: "Weekly", sub: "Once a week" },
+    { key: "instant", name: "Instant", sub: "After every detection" },
+    { key: "daily", name: "Daily", sub: "Bundled overnight" },
+    { key: "weekly", name: "Weekly", sub: "Once a week" },
 ];
 
 const PROVIDER_LABEL: Record<string, string> = {
-  revolut: "Revolut",
-  spuerkeess: "Spuerkeess",
+    revolut: "Revolut",
+    spuerkeess: "Spuerkeess",
 };
 
 function useToast() {
-  const [msg, setMsg] = useState<string | null>(null);
-  const opacity = React.useRef(new Animated.Value(0)).current;
-  const show = (text: string) => {
-    setMsg(text);
-    Animated.sequence([
-      Animated.timing(opacity, { toValue: 1, duration: 200, useNativeDriver: true, easing: Easing.out(Easing.cubic) }),
-      Animated.delay(1800),
-      Animated.timing(opacity, { toValue: 0, duration: 250, useNativeDriver: true }),
-    ]).start(() => setMsg(null));
-  };
-  return { msg, opacity, show };
+    const [msg, setMsg] = useState<string | null>(null);
+    const opacity = React.useRef(new Animated.Value(0)).current;
+
+    const show = (text: string) => {
+        setMsg(text);
+        Animated.sequence([
+            Animated.timing(opacity, {
+                toValue: 1,
+                duration: 200,
+                useNativeDriver: true,
+                easing: Easing.out(Easing.cubic),
+            }),
+            Animated.delay(1800),
+            Animated.timing(opacity, {
+                toValue: 0,
+                duration: 250,
+                useNativeDriver: true,
+            }),
+        ]).start(() => setMsg(null));
+    };
+
+    return { msg, opacity, show };
 }
 
 export default function SettingsScreen() {
-  const insets = useSafeAreaInsets();
-  const router = useRouter();
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [accounts, setAccounts] = useState<LinkedAccount[]>([]);
-  const [loading, setLoading] = useState(true);
-  const toast = useToast();
+    const insets = useSafeAreaInsets();
+    const router = useRouter();
 
-  const load = useCallback(async () => {
-    try {
-      const [s, a] = await Promise.all([api.getSettings(), api.listAccounts()]);
-      setSettings(s);
-      setAccounts(a);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    const [settings, setSettings] = useState<Settings | null>(null);
+    const [accounts, setAccounts] = useState<LinkedAccount[]>([]);
+    const [loading, setLoading] = useState(true);
+    const toast = useToast();
 
-  useFocusEffect(useCallback(() => { setLoading(true); load(); }, [load]));
+    const load = useCallback(async () => {
+        try {
+            const [s, a] = await Promise.all([
+                api.getSettings(),
+                api.listAccounts(),
+            ]);
+            setSettings(s);
+            setAccounts(a);
+        } finally {
+            setLoading(false);
+        }
+    }, []);
 
-  const setProfile = async (key: ProfileKey) => {
-    if (!settings) return;
-    const prev = settings;
-    setSettings({ ...settings, profile_type: key });
-    try {
-      const s = await api.patchSettings({ profile_type: key });
-      setSettings(s);
-      toast.show(`Active profile: ${PROFILES.find((p) => p.key === key)?.name}`);
-    } catch {
-      setSettings(prev);
-      toast.show("Couldn't switch profile");
-    }
-  };
+    useFocusEffect(
+        useCallback(() => {
+            setLoading(true);
+            load();
+        }, [load])
+    );
 
-  const setFreq = async (key: FreqKey) => {
-    const opt = FREQS.find((f) => f.key === key)!;
-    if (opt.comingSoon) {
-      toast.show(`${opt.name} transfers — coming soon`);
-      return;
-    }
-    if (!settings) return;
-    const prev = settings;
-    setSettings({ ...settings, transfer_frequency: key });
-    try {
-      const s = await api.patchSettings({ transfer_frequency: key });
-      setSettings(s);
-    } catch {
-      setSettings(prev);
-    }
-  };
+    const setProfile = async (key: ProfileKey) => {
+        if (!settings) return;
+        const prev = settings;
+        setSettings({ ...settings, profile_type: key });
 
-  const togglePause = async () => {
-    if (!settings) return;
-    const next = !settings.pause_all_taxes;
-    const prev = settings;
-    setSettings({ ...settings, pause_all_taxes: next });
-    try {
-      const s = await api.patchSettings({ pause_all_taxes: next });
-      setSettings(s);
-      toast.show(next ? "All taxes paused" : "Taxes resumed");
-    } catch {
-      setSettings(prev);
-    }
-  };
+        try {
+            const s = await api.patchSettings({ profile_type: key });
+            setSettings(s);
+            toast.show(`Active profile: ${key}`);
+        } catch {
+            setSettings(prev);
+            toast.show("Couldn't switch profile");
+        }
+    };
 
-  const unlink = async (id: string) => {
-    await api.unlinkBank(id);
-    await load();
-    toast.show("Bank disconnected");
-  };
+    const setEthicalAll = async (v: boolean) => {
+        if (!settings) return;
+        const prev = settings;
+        setSettings({ ...settings, apply_ethical_penalty_all_profiles: v });
 
-  return (
-    <View style={{ flex: 1, backgroundColor: colors.surface }} testID="settings-screen">
-      <ScrollView
-        contentContainerStyle={{
-          paddingTop: insets.top + spacing.lg,
-          paddingHorizontal: spacing.xl,
-          paddingBottom: insets.bottom + 120,
-          gap: spacing.xl,
-        }}
-      >
-        <View style={{ gap: spacing.xs }}>
-          <Text style={styles.kicker}>HOW ÉVA TAXES YOU</Text>
-          <Text style={styles.h1}>Behavioral profile</Text>
+        try {
+            const s = await api.patchSettings({ apply_ethical_penalty_all_profiles: v });
+            setSettings(s);
+        } catch {
+            setSettings(prev);
+            toast.show("Couldn't update ethical penalty setting");
+        }
+    };
+
+    const setFreq = async (key: FreqKey) => {
+        if (!settings) return;
+        const prev = settings;
+
+        setSettings({ ...settings, transfer_frequency: key });
+
+        try {
+            const s = await api.patchSettings({ transfer_frequency: key });
+            setSettings(s);
+        } catch {
+            setSettings(prev);
+        }
+    };
+
+    const togglePause = async () => {
+        if (!settings) return;
+        const next = !settings.pause_all_taxes;
+        const prev = settings;
+
+        setSettings({ ...settings, pause_all_taxes: next });
+
+        try {
+            const s = await api.patchSettings({ pause_all_taxes: next });
+            setSettings(s);
+            toast.show(next ? "Taxes paused" : "Taxes resumed");
+        } catch {
+            setSettings(prev);
+        }
+    };
+
+    const unlink = async (id: string) => {
+        await api.unlinkBank(id);
+        await load();
+        toast.show("Bank disconnected");
+    };
+
+    return (
+        <View style={{ flex: 1, backgroundColor: colors.surface }}>
+            <ScrollView
+                contentContainerStyle={{
+                    paddingTop: insets.top + spacing.lg,
+                    paddingHorizontal: spacing.xl,
+                    paddingBottom: insets.bottom + 120,
+                    gap: spacing.xl,
+                }}
+            >
+                <Text style={styles.h1}>Behavioral profile</Text>
+
+                {loading || !settings ? (
+                    <ActivityIndicator color={colors.brand} />
+                ) : (
+                    <>
+                        {PROFILES.map((p) => {
+                            const active = settings.profile_type === p.key;
+
+                            return (
+                                <Pressable
+                                    key={p.key}
+                                    onPress={() => setProfile(p.key)}
+                                    style={[
+                                        styles.profileCard,
+                                        active && styles.profileCardActive,
+                                    ]}
+                                >
+                                    <View style={styles.profileTop}>
+                                        <Text style={styles.profileName}>{p.name}</Text>
+                                    </View>
+
+                                    <Text style={styles.profileDesc}>{p.desc}</Text>
+
+                                    <Intensity n={p.intensity} />
+                                </Pressable>
+                            );
+                        })}
+
+                        <View style={styles.switchRow}>
+                            <Text style={styles.sectionLabel}>
+                                Apply ethical penalty globally
+                            </Text>
+                            <Switch
+                                value={settings.apply_ethical_penalty_all_profiles}
+                                onValueChange={setEthicalAll}
+                            />
+                        </View>
+
+                        <View>
+                            <Text style={styles.sectionLabel}>Transfer timing</Text>
+                            {FREQS.map((f) => (
+
+                                <Pressable
+                                    key={f.key}
+                                    onPress={() => setFreq(f.key)}
+                                    style={styles.freqChip}
+                                >
+                                    <Text>{f.name}</Text>
+                                    <Text>{f.sub}</Text>
+                                </Pressable>
+                            ))}
+                            {settings.transfer_last_run_at ? (
+                                <Text style={styles.lastRunText}>
+                                    Last run: {new Date(settings.transfer_last_run_at).toLocaleString()}
+                                </Text>
+                            ) : null}
+                        </View>
+
+                        <View>
+                            <Text style={styles.sectionLabel}>Banks</Text>
+                            {accounts.map((a) => (
+                                <View key={a.id} style={styles.bankRow}>
+                                    <Text>{PROVIDER_LABEL[a.provider] || a.provider}</Text>
+                                    <Pressable onPress={() => unlink(a.id)}>
+                                        <Text>Unlink</Text>
+                                    </Pressable>
+                                </View>
+                            ))}
+                        </View>
+
+                        <Pressable onPress={togglePause} style={styles.pauseBtn}>
+                            <Text>
+                                {settings.pause_all_taxes
+                                    ? "Taxes paused"
+                                    : "Pause all taxes"}
+                            </Text>
+                        </Pressable>
+                    </>
+                )}
+            </ScrollView>
         </View>
-
-        {loading || !settings ? (
-          <ActivityIndicator color={colors.brand} style={{ marginTop: spacing.xl }} />
-        ) : (
-          <>
-            <View style={{ gap: spacing.md }}>
-              {PROFILES.map((p) => {
-                const active = settings.profile_type === p.key;
-                return (
-                  <Pressable
-                    key={p.key}
-                    onPress={() => setProfile(p.key)}
-                    style={[styles.profileCard, active && styles.profileCardActive]}
-                    testID={`profile-${p.key}`}
-                  >
-                    <View style={styles.profileTop}>
-                      <Text style={[styles.profileName, active && styles.profileNameActive]}>{p.name}</Text>
-                      <Intensity n={p.intensity} active={active} />
-                    </View>
-                    <Text style={styles.profileDesc}>{p.desc}</Text>
-                    {active ? (
-                      <View style={styles.activeChip}>
-                        <Feather name="check" size={12} color={colors.onBrand} />
-                        <Text style={styles.activeChipText}>Active</Text>
-                      </View>
-                    ) : null}
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            <View style={{ gap: spacing.sm }}>
-              <Text style={styles.sectionLabel}>Transfer timing</Text>
-              <View style={styles.freqRow}>
-                {FREQS.map((f) => {
-                  const active = settings.transfer_frequency === f.key;
-                  return (
-                    <Pressable
-                      key={f.key}
-                      onPress={() => setFreq(f.key)}
-                      style={[styles.freqChip, active && styles.freqChipActive]}
-                      testID={`freq-${f.key}`}
-                    >
-                      <Text style={[styles.freqText, active && styles.freqTextActive]}>{f.name}</Text>
-                      <Text style={[styles.freqSub, active && styles.freqSubActive]}>{f.sub}</Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </View>
-
-            <View style={{ gap: spacing.sm }}>
-              <Text style={styles.sectionLabel}>Savings destinations</Text>
-              <Pressable
-                onPress={() => router.push("/destinations")}
-                style={styles.bankRowEmpty}
-                testID="settings-destinations"
-              >
-                <Feather name="archive" size={18} color={colors.onSurface} />
-                <Text style={styles.bankRowText}>Manage destinations</Text>
-                <Feather name="chevron-right" size={18} color={colors.muted} />
-              </Pressable>
-              <Pressable
-                onPress={() => router.push("/monthly-resume")}
-                style={styles.bankRowEmpty}
-                testID="settings-monthly-resume"
-              >
-                <Feather name="file-text" size={18} color={colors.onSurface} />
-                <Text style={styles.bankRowText}>Monthly resume (export)</Text>
-                <Feather name="chevron-right" size={18} color={colors.muted} />
-              </Pressable>
-            </View>
-
-            <View style={{ gap: spacing.sm }}>
-              <Text style={styles.sectionLabel}>Bank connections</Text>
-              {accounts.length === 0 ? (
-                <Pressable
-                  onPress={() => router.push("/link-bank")}
-                  style={styles.bankRowEmpty}
-                  testID="settings-link-bank"
-                >
-                  <Feather name="link" size={18} color={colors.onSurface} />
-                  <Text style={styles.bankRowText}>Connect a bank</Text>
-                  <Feather name="chevron-right" size={18} color={colors.muted} />
-                </Pressable>
-              ) : (
-                accounts.map((a) => (
-                  <View key={a.id} style={styles.bankRow} testID={`bank-row-${a.id}`}>
-                    <View style={styles.bankDot}><Feather name="check" size={14} color={colors.onBrand} /></View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.bankName}>{PROVIDER_LABEL[a.provider] || a.provider}</Text>
-                      <Text style={styles.bankSub}>Linked · {new Date(a.linked_at).toLocaleDateString()}</Text>
-                    </View>
-                    <Pressable onPress={() => unlink(a.id)} style={styles.unlinkBtn} testID={`unlink-${a.id}`}>
-                      <Text style={styles.unlinkText}>Unlink</Text>
-                    </Pressable>
-                  </View>
-                ))
-              )}
-              {accounts.length > 0 ? (
-                <Pressable
-                  onPress={() => router.push("/link-bank")}
-                  style={styles.addBankRow}
-                  testID="settings-add-bank"
-                >
-                  <Feather name="plus" size={18} color={colors.onSurface} />
-                  <Text style={styles.bankRowText}>Add bank</Text>
-                </Pressable>
-              ) : null}
-            </View>
-
-            <View style={styles.danger} testID="danger-zone">
-              <Text style={styles.dangerLabel}>Danger zone</Text>
-              <Pressable
-                onPress={togglePause}
-                style={styles.pauseRow}
-                testID="pause-toggle"
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.pauseTitle}>Pause all taxes</Text>
-                  <Text style={styles.pauseHint}>
-                    {settings.pause_all_taxes
-                      ? "Taxes are PAUSED — no automatic savings will be made until you turn this off."
-                      : "While paused, no taxes will be applied to incoming transactions."}
-                  </Text>
-                </View>
-                <View style={[styles.switch, settings.pause_all_taxes && styles.switchOn]}>
-                  <View style={[styles.knob, settings.pause_all_taxes && styles.knobOn]} />
-                </View>
-              </Pressable>
-            </View>
-          </>
-        )}
-      </ScrollView>
-
-      {toast.msg ? (
-        <Animated.View style={[styles.toast, { opacity: toast.opacity, bottom: insets.bottom + 80 }]} testID="toast">
-          <Text style={styles.toastText}>{toast.msg}</Text>
-        </Animated.View>
-      ) : null}
-    </View>
-  );
+    );
 }
 
-function Intensity({ n, active }: { n: number; active: boolean }) {
-  return (
-    <View style={{ flexDirection: "row", gap: 3 }}>
-      {[0, 1, 2, 3, 4].map((i) => (
-        <View
-          key={i}
-          style={{
-            width: 6, height: 14, borderRadius: 3,
-            backgroundColor: i < n
-              ? (active ? colors.brand : colors.brand)
-              : (active ? colors.borderStrong : colors.surfaceTertiary),
-          }}
-        />
-      ))}
-    </View>
-  );
+function Intensity({ n }: { n: number }) {
+    return (
+        <View style={{ flexDirection: "row", gap: 4 }}>
+            {Array.from({ length: 5 }).map((_, i) => (
+                <View
+                    key={i}
+                    style={{
+                        width: 6,
+                        height: 14,
+                        borderRadius: 3,
+                        backgroundColor: i < n ? colors.brand : colors.border,
+                    }}
+                />
+            ))}
+        </View>
+    );
 }
 
 const styles = StyleSheet.create({
-  kicker: { fontFamily: fonts.bodyMedium, fontSize: type.sm, color: colors.onSurfaceSecondary, letterSpacing: 0.6, textTransform: "uppercase" },
-  h1: { fontFamily: fonts.display, fontSize: 28, color: colors.onSurface, lineHeight: 32 },
+    h1: { fontSize: 28, fontFamily: fonts.display },
+    profileCard: {
+        padding: spacing.lg,
+        borderRadius: radius.lg,
+        backgroundColor: colors.surfaceSecondary,
+    },
+    profileCardActive: {
+        borderColor: colors.brand,
+        borderWidth: 1,
+    },
+    profileName: { fontSize: 18, fontFamily: fonts.display },
+    profileDesc: { marginTop: 6, opacity: 0.7 },
+    profileTop: { flexDirection: "row", justifyContent: "space-between" },
 
-  profileCard: { padding: spacing.lg, borderRadius: radius.lg, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, gap: spacing.sm },
-  profileCardActive: { backgroundColor: colors.brandTertiary, borderColor: colors.brand },
-  profileTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  profileName: { fontFamily: fonts.display, fontSize: type.xxl, color: colors.onSurface, lineHeight: 28 },
-  profileNameActive: { fontFamily: fonts.displayBold },
-  profileDesc: { fontFamily: fonts.body, fontSize: type.base, color: colors.onSurfaceSecondary, lineHeight: 20 },
-  activeChip: { flexDirection: "row", alignSelf: "flex-start", paddingHorizontal: spacing.sm, paddingVertical: 4, gap: 4, borderRadius: radius.pill, backgroundColor: colors.brand, alignItems: "center" },
-  activeChipText: { fontFamily: fonts.bodyMedium, fontSize: type.sm, color: colors.onBrand },
+    sectionLabel: {
+        fontSize: 12,
+        opacity: 0.6,
+        marginBottom: 8,
+    },
 
-  sectionLabel: { fontFamily: fonts.bodyMedium, fontSize: type.sm, color: colors.onSurfaceSecondary, letterSpacing: 0.5, textTransform: "uppercase" },
-  freqRow: { flexDirection: "row", gap: spacing.sm },
-  freqChip: { flex: 1, height: 64, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center", gap: 2 },
-  freqChipActive: { backgroundColor: colors.surfaceInverse, borderColor: colors.surfaceInverse },
-  freqText: { fontFamily: fonts.bodyMedium, fontSize: type.base, color: colors.onSurface },
-  freqTextActive: { color: colors.onSurfaceInverse },
-  freqSub: { fontFamily: fonts.body, fontSize: 10, color: colors.onSurfaceSecondary, letterSpacing: 0.3 },
-  freqSubActive: { color: "rgba(247,245,242,0.7)" },
+    freqChip: {
+        padding: 12,
+        borderRadius: 10,
+        backgroundColor: colors.surfaceSecondary,
+        marginBottom: 8,
+    },
 
-  bankRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
-  bankRowEmpty: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.lg, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, borderStyle: "dashed" },
-  bankRowText: { flex: 1, fontFamily: fonts.bodyMedium, fontSize: type.lg, color: colors.onSurface },
-  addBankRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, borderStyle: "dashed" },
-  bankDot: { width: 28, height: 28, borderRadius: radius.pill, backgroundColor: colors.brand, alignItems: "center", justifyContent: "center" },
-  bankName: { fontFamily: fonts.bodyBold, fontSize: type.lg, color: colors.onSurface },
-  bankSub: { fontFamily: fonts.body, fontSize: type.sm, color: colors.onSurfaceSecondary, marginTop: 2 },
-  unlinkBtn: { paddingHorizontal: spacing.md, height: 32, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center" },
-  unlinkText: { fontFamily: fonts.bodyMedium, fontSize: type.sm, color: colors.onSurfaceSecondary },
+    bankRow: {
+        flexDirection: "row",
+        justifyContent: "space-between",
+        padding: 12,
+    },
 
-  danger: { padding: spacing.lg, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, gap: spacing.sm, marginTop: spacing.md },
-  dangerLabel: { fontFamily: fonts.bodyMedium, fontSize: type.sm, color: colors.error, letterSpacing: 0.5, textTransform: "uppercase" },
-  pauseRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, paddingVertical: spacing.sm },
-  pauseTitle: { fontFamily: fonts.bodyBold, fontSize: type.lg, color: colors.onSurface },
-  pauseHint: { fontFamily: fonts.body, fontSize: type.sm, color: colors.onSurfaceSecondary, marginTop: 2, lineHeight: 18 },
-  switch: { width: 48, height: 28, borderRadius: 14, backgroundColor: colors.surfaceTertiary, padding: 2, justifyContent: "center" },
-  switchOn: { backgroundColor: colors.error },
-  knob: { width: 24, height: 24, borderRadius: 12, backgroundColor: colors.surface },
-  knobOn: { transform: [{ translateX: 20 }] },
+    pauseBtn: {
+        padding: 14,
+        backgroundColor: colors.surfaceSecondary,
+        borderRadius: 10,
+        marginTop: 20,
+    },
 
-  toast: { position: "absolute", left: spacing.xl, right: spacing.xl, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderRadius: radius.md, backgroundColor: colors.surfaceInverse, alignItems: "center" },
-  toastText: { fontFamily: fonts.bodyMedium, fontSize: type.base, color: colors.onSurfaceInverse },
+    switchRow: {
+        flexDirection: "row",
+        justifyContent: "space-between",
+        alignItems: "center",
+    },
+
+    lastRunText: {
+        fontSize: 12,
+        opacity: 0.6,
+        marginTop: 4,
+    },
 });

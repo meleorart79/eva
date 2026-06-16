@@ -327,6 +327,8 @@ class TestOverride:
 # ----------------- Transfer -----------------
 class TestTransfer:
     def test_transfer_marks_pending_transferred(self, api_client, auth):
+        api_client.patch(f"{API}/settings", json={"transfer_frequency": "weekly"})
+        api_client.post(f"{API}/tax/process")
         r = api_client.post(f"{API}/tax/transfer")
         assert r.status_code == 200
         body = r.json()
@@ -335,6 +337,8 @@ class TestTransfer:
         assert "transfer_id" in body
 
     def test_transfer_no_pending_returns_zero(self, api_client, auth):
+        api_client.patch(f"{API}/settings", json={"transfer_frequency": "weekly"})
+        api_client.post(f"{API}/tax/process")
         r = api_client.post(f"{API}/tax/transfer")
         assert r.status_code == 200
         body = r.json()
@@ -399,3 +403,24 @@ class TestBucketsRegression:
         # Now delete new bucket
         d2 = api_client.delete(f"{API}/buckets/{new_id}")
         assert d2.status_code == 200
+
+class TestRepetitionDayBoundary:
+    def test_same_session_different_calendar_days(self, api_client, auth):
+        # Transaction at 23:58 and 00:02 (next day) must land in different
+        # daily repetition buckets even though they're in the same session.
+        t1 = "2024-01-01T23:58:00Z"
+        t2 = "2024-01-02T00:02:00Z"
+
+        api_client.post(f"{API}/bank/mock-transactions", json={
+            "merchant": "Starbucks", "amount": 4.50, "transacted_at": t1
+        })
+        api_client.post(f"{API}/bank/mock-transactions", json={
+            "merchant": "Starbucks", "amount": 4.50, "transacted_at": t2
+        })
+        api_client.post(f"{API}/tax/process")
+
+        r = api_client.get(f"{API}/insights/summary")
+        assert r.status_code == 200
+        # Both transactions should be taxed at the base rate (hit_count == 0
+        # for each), not at an escalated repetition rate, proving they were
+        # counted on separate days.

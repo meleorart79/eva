@@ -42,7 +42,7 @@ export default function Register() {
     setLoading(true);
     try {
       await signUp(email.trim(), password, name.trim(), currency);
-      router.replace("/(tabs)");
+      router.replace("/getting-started");
     } catch (e: any) {
       setErr(e.message || "Could not register.");
     } finally {

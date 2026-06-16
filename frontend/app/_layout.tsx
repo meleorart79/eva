@@ -10,11 +10,23 @@ import { useAppFonts } from "@/src/hooks/use-app-fonts";
 import { AuthProvider } from "@/src/auth";
 import { colors } from "@/src/theme";
 
+import * as Notifications from "expo-notifications";
+import { api } from "@/src/api";
+
 // Keep the native splash visible from cold start until icon fonts register.
 // Required because @expo/vector-icons' componentDidMount fallback fires
 // Font.loadAsync against a broken vendor path if any <Icon> mounts before
 // the family is registered — which throws on Android Expo Go.
 SplashScreen.preventAutoHideAsync();
+
+Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+        shouldShowBanner: true,
+        shouldShowList: true,
+        shouldPlaySound: true,
+        shouldSetBadge: false,
+    }),
+});
 
 export default function RootLayout() {
   const [iconsLoaded, iconsError] = useIconFonts();
@@ -22,9 +34,40 @@ export default function RootLayout() {
 
   const ready = (iconsLoaded || iconsError) && (appLoaded || appError);
 
-  useEffect(() => {
-    if (ready) SplashScreen.hideAsync();
-  }, [ready]);
+    const registerForPushNotifications = async () => {
+        try {
+            const { status: existingStatus } =
+                await Notifications.getPermissionsAsync();
+
+            let finalStatus = existingStatus;
+
+            if (existingStatus !== "granted") {
+                const { status } =
+                    await Notifications.requestPermissionsAsync();
+
+                finalStatus = status;
+            }
+
+            if (finalStatus !== "granted") {
+                return;
+            }
+
+            const token =
+                (await Notifications.getExpoPushTokenAsync()).data;
+
+            await api.registerPushToken({ token });
+
+            console.log("Expo push token:", token);
+        } catch (err) {
+            console.error("Push registration failed:", err);
+        }
+    };
+
+    useEffect(() => {
+        SplashScreen.hideAsync();
+
+        registerForPushNotifications();
+    }, [ready]);
 
   if (!ready) return null;
 

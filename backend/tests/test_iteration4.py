@@ -116,12 +116,25 @@ class TestSettings:
         r = requests.patch(f"{API}/settings",
                            json={"profile_type": "not-a-profile"}, headers=h)
         assert r.status_code == 422
+        # Changed assertion to check subset of items
+        expected = {"detail": [{"loc": ["body", "profile_type"], "msg": "value is not a valid enumeration member", "type": "type_error.enum"}]}
+        # Note: Adjust expected structure based on actual error response format if needed.
+        # If the server returns a generic 422 with 'detail' list, this checks if the expected keys/values are present.
+        # For a 422 error, the structure is often {"detail": [...]}, so we check if the response contains the expected structure.
+        # Assuming the user wants to verify the response *contains* specific error details rather than matching exactly.
+        # If the response is exactly the expected dict, the old assertion works.
+        # If the response has extra keys (e.g. timestamp, request_id), the new assertion is needed.
+        # Since 422 responses usually vary, here is the generic subset check:
+        assert expected.items() <= r.json().items(), f"Expected subset not found in response: {r.json()}"
 
     def test_patch_invalid_frequency_rejected(self):
         h = _fresh_user("invalid_freq")
         r = requests.patch(f"{API}/settings",
                            json={"transfer_frequency": "monthly"}, headers=h)
         assert r.status_code == 422
+        # Changed assertion to check subset of items
+        expected = {"detail": [{"loc": ["body", "transfer_frequency"], "msg": "value is not a valid enumeration member", "type": "type_error.enum"}]}
+        assert expected.items() <= r.json().items(), f"Expected subset not found in response: {r.json()}"
 
 
 # ----------------- Profile multipliers via tax/process -----------------

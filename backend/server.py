@@ -20,13 +20,14 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 from pydantic import BaseModel, EmailStr, Field
+from contextlib import asynccontextmanager
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
-SECRET_KEY = os.getenv("JWT_SECRET", "eva-behavior-tax-dev-secret-change-me")
+SECRET_KEY = os.environ["JWT_SECRET"]
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30
 OVERRIDE_WINDOW_MINUTES = 10
@@ -51,8 +52,36 @@ db = client[DB_NAME]
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer = HTTPBearer(auto_error=False)
 
-app = FastAPI(title="Eva — Behavior Tax")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- startup ---
+    try:
+        await client.admin.command("ping")
+    except Exception as e:
+        raise RuntimeError(f"MongoDB startup check failed: {e}")
+
+    async def scheduler_loop():
+        while True:
+            try:
+                await asyncio.sleep(60)
+                await _run_scheduler_once()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Scheduler loop iteration failed")
+
+    task = asyncio.create_task(scheduler_loop())
+
+    yield  # app runs here
+
+    # --- shutdown ---
+    task.cancel()
+    client.close()
+
+app = FastAPI(title="Eva — Behavior Tax", lifespan=lifespan)
 api = APIRouter(prefix="/api")
+
+EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 
 
 # ---------- Models ----------
@@ -178,6 +207,7 @@ class SettingsIn(BaseModel):
     profile_type: Optional[Literal["balanced", "aggressive", "ethical", "mindful", "savings_beast"]] = None
     transfer_frequency: Optional[Literal["instant", "daily", "weekly"]] = None
     pause_all_taxes: Optional[bool] = None
+    apply_ethical_penalty_all_profiles: Optional[bool] = None
 
 
 class SettingsOut(BaseModel):
@@ -185,6 +215,14 @@ class SettingsOut(BaseModel):
     transfer_frequency: str
     pause_all_taxes: bool
     transfer_last_run_at: Optional[datetime] = None
+    apply_ethical_penalty_all_profiles: bool
+
+class ResolveReviewIn(BaseModel):
+    action: Literal["approve", "change_destination"]
+    destination_id: Optional[str] = None
+
+class PushTokenIn(BaseModel):
+    token: str
 
 
 # ---------- Helpers ----------
@@ -263,9 +301,16 @@ def to_settings_out(u: dict) -> SettingsOut:
         profile_type=u.get("profile_type", "balanced"),
         transfer_frequency=u.get("transfer_frequency", "instant"),
         pause_all_taxes=bool(u.get("pause_all_taxes", False)),
+        apply_ethical_penalty_all_profiles=u.get("apply_ethical_penalty_all_profiles", False),
         transfer_last_run_at=ensure_aware(last) if last else None,
     )
 
+def send_push(token: str, title: str, body: str):
+    requests.post(EXPO_PUSH_URL, json={
+        "to": token,
+        "title": title,
+        "body": body,
+    })
 
 DEFAULT_CATEGORIES = [
     {"name": "Coffee", "icon": "coffee", "tax_rate": 0.25,
@@ -324,14 +369,18 @@ async def seed_user_defaults(user_id: str, currency: str) -> str:
     return bucket_id
 
 
-def apply_profile_multiplier(rate: float, cat_name: str, profile: str, max_rate: float) -> float:
+def apply_profile_multiplier(rate, cat_name, profile, max_rate, apply_ethical_all):
     if profile == "aggressive" or profile == "savings_beast":
         rate = rate * 1.5
-    elif profile == "ethical":
-        if cat_name in ETHICAL_PENALTY_CATS:
-            rate = rate * 1.4
     elif profile == "mindful":
         rate = rate * 0.5
+
+    ethical_penalty_applies = cat_name in ETHICAL_PENALTY_CATS and (
+        apply_ethical_all or profile == "ethical"
+    )
+    if ethical_penalty_applies:
+        rate = rate * 1.4
+
     return min(max_rate, rate)
 
 
@@ -357,6 +406,8 @@ async def register(data: UserCreate):
         "pause_all_taxes": False,
         "transfer_last_run_at": None,
         "created_at": datetime.now(timezone.utc),
+        "apply_ethical_penalty_all_profiles": False,
+        "expo_push_token": None,
     }
     await db.users.insert_one(user_doc)
     return Token(access_token=create_token(uid), user=to_user_out(user_doc))
@@ -414,6 +465,52 @@ async def patch_settings(data: SettingsIn, user=Depends(current_user)):
         user.update(update)
     return to_settings_out(user)
 
+@api.post("/tax/events/{event_id}/resolve-review")
+async def resolve_review(event_id: str, data: ResolveReviewIn, user=Depends(current_user)):
+    ev = await db.tax_events.find_one({"id": event_id, "user_id": user["id"]})
+    if not ev:
+        raise HTTPException(404, "Tax event not found")
+    if not ev.get("requires_review"):
+        raise HTTPException(400, "Event does not require review")
+
+    if data.action == "approve":
+        await db.tax_events.update_one(
+            {"id": event_id},
+            {"$set": {"requires_review": False, "review_reason": None, "transfer_status": "pending"}},
+        )
+        return {"ok": True}
+
+    if not data.destination_id:
+        raise HTTPException(400, "destination_id required")
+    dest = await db.savings_destinations.find_one(
+        {"id": data.destination_id, "user_id": user["id"], "is_active": True}
+    )
+    if not dest:
+        raise HTTPException(404, "Destination not found")
+    await db.tax_events.update_one(
+        {"id": event_id},
+        {"$set": {
+            "destination_id": dest["id"],
+            "destination_label": dest["label"],
+            "destination_currency": dest["currency"],
+            "requires_review": False,
+            "review_reason": None,
+            "transfer_status": "pending",
+        }},
+    )
+    return {"ok": True}
+
+@api.post("/notifications/register")
+async def register_push_token(
+    data: PushTokenIn,
+    user=Depends(current_user),
+):
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"expo_push_token": data.token}},
+    )
+
+    return {"ok": True}
 
 # ---------- Categories ----------
 @api.get("/categories", response_model=List[CategoryOut])
@@ -1009,6 +1106,14 @@ async def _execute_transfers(user: dict, trigger: str = "manual") -> List[dict]:
                 "transfer_provider_ref": ref,
             }},
         )
+        if user.get("expo_push_token"):
+            label = first.get("category_name") or "your spending"
+            if len(events) == 1:
+                msg = f"€{total:.2f} saved on {label}"
+            else:
+                msg = f"€{total:.2f} saved across {len(events)} taxed transactions"
+            send_push(user["expo_push_token"], "Tax applied", msg)
+
         out.append({
             "transfer_id": transfer_id, "provider_ref": ref,
             "total_amount": total, "event_count": len(events),
@@ -1074,6 +1179,7 @@ async def tax_process(user=Depends(current_user)):
     skipped = 0
     unmatched = 0
     review = 0
+    taxed_details = []
 
     for tx in pending:
         cat = _match_category(tx["merchant_name"], cats)
@@ -1113,7 +1219,7 @@ async def tax_process(user=Depends(current_user)):
         inc = float(cat.get("rep_increment", 0.05))
         max_rate = float(cat.get("max_tax_rate", 0.50))
         rep_rate = min(max_rate, base + hit_count * inc)
-        effective_rate = apply_profile_multiplier(rep_rate, cat["name"], profile, max_rate)
+        effective_rate = apply_profile_multiplier(rep_rate, cat["name"], profile, max_rate, user.get("apply_ethical_penalty_all_profiles", False))
         tax_amount = round(float(tx["amount"]) * effective_rate, 2)
         if taxed_today + tax_amount > cap:
             tax_amount = round(max(0.0, cap - taxed_today), 2)
@@ -1191,6 +1297,11 @@ async def tax_process(user=Depends(current_user)):
             {"id": tx["id"]}, {"$set": {"status": "taxed", "matched_category_id": cat["id"]}},
         )
         taxed += 1
+        taxed_details.append({
+            "merchant_name": tx["merchant_name"],
+            "category_name": cat["name"],
+            "tax_amount": tax_amount,
+        })
         if requires_review:
             review += 1
 
@@ -1198,6 +1309,7 @@ async def tax_process(user=Depends(current_user)):
         "processed": len(pending), "taxed": taxed,
         "skipped": skipped, "unmatched": unmatched,
         "requires_review": review,
+        "taxed_details": taxed_details
     }
 
     auto = await _maybe_auto_transfer(user)
@@ -1227,9 +1339,13 @@ async def tax_override(event_id: str, user=Depends(current_user)):
     )
     if ev.get("bucket_id"):
         await db.buckets.update_one(
-            {"id": ev["bucket_id"], "user_id": user["id"]},
-            {"$inc": {"saved_amount": -float(ev["tax_amount"])}},
-        )
+        {"id": ev["bucket_id"], "user_id": user["id"]},
+        [{"$set": {
+            "saved_amount": {
+                "$max": [0.0, {"$subtract": ["$saved_amount", float(ev["tax_amount"])]}]
+            }
+        }}],
+    )
     return {"ok": True}
 
 
@@ -1282,21 +1398,6 @@ async def scheduler_run_manual(user=Depends(current_user)):
     # Even for instant frequency, allow manual run to flush pending.
     results = await _execute_transfers(user, trigger="scheduler_manual")
     return {"ok": True, "transfers": results}
-
-
-@app.on_event("startup")
-async def _start_scheduler_loop():
-    async def loop():
-        while True:
-            try:
-                await asyncio.sleep(60)
-                await _run_scheduler_once()
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                logger.exception("Scheduler loop iteration failed")
-    asyncio.create_task(loop())
-
 
 # ---------- Activity feed ----------
 @api.get("/activity", response_model=List[ActivityRow])
@@ -1600,8 +1701,3 @@ app.add_middleware(
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()

@@ -10,6 +10,8 @@ import { colors, fonts, fmt, radius, spacing, type } from "@/src/theme";
 import { useAuth } from "@/src/auth";
 import { api, ActivityRow, Bucket, LinkedAccount, Summary } from "@/src/api";
 
+import * as Notifications from "expo-notifications";
+
 const PROVIDER_LABEL: Record<string, string> = {
   revolut: "Revolut",
   spuerkeess: "Spuerkeess",
@@ -68,22 +70,33 @@ export default function Dashboard() {
 
   const defaultBucket = buckets.find((b) => b.is_default) || buckets[0];
 
-  const sync = async () => {
-    setSyncing(true);
-    setSyncMsg(null);
-    try {
-      const sres = await api.syncBank();
-      const pres = await api.processTax();
-      setSyncMsg(
-        `Pulled ${sres.ingested} new · taxed ${pres.taxed} · skipped ${pres.skipped} · unmatched ${pres.unmatched}`
-      );
-      await load();
-    } catch (e: any) {
-      setSyncMsg(e.message || "Sync failed");
-    } finally {
-      setSyncing(false);
-    }
-  };
+    const sync = async () => {
+        setSyncing(true);
+        setSyncMsg(null);
+        try {
+            const sres = await api.syncBank();
+            const pres = await api.processTax();
+            setSyncMsg(
+                `Pulled ${sres.ingested} new · taxed ${pres.taxed} · skipped ${pres.skipped} · unmatched ${pres.unmatched}`
+            );
+
+            for (const d of pres.taxed_details ?? []) {
+                await Notifications.scheduleNotificationAsync({
+                    content: {
+                        title: "Tax applied",
+                        body: `${fmt(d.tax_amount, ccy)} saved on ${d.merchant_name}`,
+                    },
+                    trigger: null, // fire immediately, no scheduling delay
+                });
+            }
+
+            await load();
+        } catch (e: any) {
+            setSyncMsg(e.message || "Sync failed");
+        } finally {
+            setSyncing(false);
+        }
+    };
 
   const override = async (eventId: string) => {
     try {
@@ -92,6 +105,28 @@ export default function Dashboard() {
     } catch {
       // ignore
     }
+    };
+
+  const resolveReview = async (eventId: string) => {
+      Alert.alert(
+          "Resolve review",
+          "Approve this transfer despite the currency mismatch?",
+          [
+              { text: "Cancel", style: "cancel" },
+              {
+                  text: "Approve",
+                  onPress: async () => {
+                      try {
+                          await api.resolveReview(eventId, { action: "approve" });
+                          await load();
+                      } catch {
+                            // ignore
+                      }
+                  },
+              },
+                { text: "Pick a different destination", onPress: () => router.push("/destinations") },
+          ]
+      );
   };
 
   const minutesLeft = (createdAt?: string | null) => {
@@ -291,9 +326,13 @@ export default function Dashboard() {
                           </Text>
                         </View>
                         {a.requires_review ? (
-                          <View style={[styles.statusBadge, styles.status_review]} testID={`act-review-${a.raw_txn_id}`}>
-                            <Text style={styles.statusBadgeText}>Needs review</Text>
-                          </View>
+                            <Pressable
+                                onPress={() => a.tax_event_id && resolveReview(a.tax_event_id)}
+                                style={[styles.statusBadge, styles.status_review]}
+                                testID={`act-review-${a.raw_txn_id}`}
+                            >
+                                <Text style={styles.statusBadgeText}>Needs review · tap to resolve</Text>
+                            </Pressable>
                         ) : a.transfer_status === "executed" ? (
                           <View style={[styles.statusBadge, styles.status_transferred]} testID={`act-transfer-${a.raw_txn_id}`}>
                             <Text style={styles.statusBadgeText}>
