@@ -134,22 +134,35 @@ export async function clearToken() {
 }
 
 async function req<T>(path: string, opts: RequestInit = {}, auth = true): Promise<T> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(opts.headers as Record<string, string> | undefined),
-  };
-  if (auth) {
-    const t = await getToken();
-    if (t) headers.Authorization = `Bearer ${t}`;
-  }
-  const res = await fetch(`${BASE}/api${path}`, { ...opts, headers });
-  const text = await res.text();
-  let data = null;
-  try {
-      data = text ? JSON.parse(text) : null;
-  } catch {
-    throw new Error(`Server returned non-JSON (status ${res.status}): ${text.slice(0, 200)}`);
-  }
+    const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        ...(opts.headers as Record<string, string> | undefined),
+    };
+    if (auth) {
+        const t = await getToken();
+        if (t) headers.Authorization = `Bearer ${t}`;
+    }
+
+    const url = `${BASE}/api${path}`;
+    const res = await fetch(url, { ...opts, headers });
+    const text = await res.text();
+
+    let data: any = null;
+    if (text) {
+        try {
+            data = JSON.parse(text);
+        } catch {
+            throw new Error(`Expected JSON from ${url} but got status ${res.status}: ${text.slice(0, 200)}`);
+        }
+    }
+
+    if (!res.ok) {
+        const detail = data?.detail;
+        const message = Array.isArray(detail) ? detail.map((d: any) => d.msg).join(", ") : detail;
+        throw new Error(message || `Request failed (${res.status})`);
+    }
+
+    return data as T;
 }
 
 export const api = {
