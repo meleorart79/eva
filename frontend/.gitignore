@@ -18,7 +18,6 @@ expo-env.d.ts
 *.key
 *.csr
 *.mobileprovision
-jwks.json
 
 # Metro
 .metro-health-check*
