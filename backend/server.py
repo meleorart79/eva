@@ -19,8 +19,51 @@ from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 from passlib.context import CryptContext
 from jose import jwt, JWTError
-from pydantic import BaseModel, EmailStr, Field
 from contextlib import asynccontextmanager
+
+from constants import (
+    DEFAULT_CATEGORIES,
+    DEST_TYPES,
+    ETHICAL_PENALTY_CATS,
+    EXPO_PUSH_URL,
+    FREQUENCIES,
+    PROFILES,
+    REVOLUT_API_BASE,
+    REVOLUT_AUTH_URL,
+    REVOLUT_CLIENT_ID,
+    REVOLUT_REDIRECT_FALLBACK,
+    REVOLUT_TOKEN_URL,
+    SAVINGS_BEAST_TRIGGER_AMOUNT,
+    TRANSFER_STATUSES,
+)
+from mappers import (
+    to_bucket_out,
+    to_cat_out,
+    to_dest_out,
+    to_settings_out,
+    to_user_out,
+)
+from providers.spuerkeess import stub_spuerkeess as _stub_spuerkeess
+from schemas import (
+    ActivityRow,
+    BucketIn,
+    BucketOut,
+    CategoryIn,
+    CategoryOut,
+    LinkedAccountIn,
+    LinkedAccountOut,
+    LoginBody,
+    PushTokenIn,
+    ResolveReviewIn,
+    SavingsDestinationIn,
+    SavingsDestinationOut,
+    SettingsIn,
+    SettingsOut,
+    Token,
+    UserCreate,
+    UserOut,
+)
+from utils import ensure_aware
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -31,20 +74,6 @@ SECRET_KEY = os.environ["JWT_SECRET"]
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30
 OVERRIDE_WINDOW_MINUTES = 10
-
-REVOLUT_CLIENT_ID = os.getenv("REVOLUT_CLIENT_ID", "05f4b015-b95a-423b-a7c8-c4e33c17b97d")
-REVOLUT_AUTH_URL = "https://sandbox-oba.revolut.com/ui/index.html"
-REVOLUT_TOKEN_URL = "https://sandbox-oba.revolut.com/token"
-REVOLUT_API_BASE = "https://sandbox-oba.revolut.com"
-REVOLUT_REDIRECT_FALLBACK = os.getenv("REVOLUT_REDIRECT_URI", "")
-
-PROFILES = ("balanced", "aggressive", "ethical", "mindful", "savings_beast")
-ETHICAL_PENALTY_CATS = {"Fast Food", "Clothes", "Entertainment", "Ethical Penalty"}
-SAVINGS_BEAST_TRIGGER_AMOUNT = 5.00
-
-DEST_TYPES = ("external_iban", "revolut_pocket")
-FREQUENCIES = ("instant", "daily", "weekly")
-TRANSFER_STATUSES = ("pending", "executed", "failed", "requires_review")
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -81,150 +110,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Eva — Behavior Tax", lifespan=lifespan)
 api = APIRouter(prefix="/api")
 
-EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
-
-
-# ---------- Models ----------
-class UserCreate(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=6)
-    name: str = Field(min_length=1, max_length=60)
-    currency: Literal["EUR", "USD", "GBP"] = "EUR"
-
-
-class UserOut(BaseModel):
-    id: str
-    email: EmailStr
-    name: str
-    currency: str
-    default_bucket_id: Optional[str] = None
-
-
-class LoginBody(BaseModel):
-    email: EmailStr
-    password: str
-
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    user: UserOut
-
-
-class CategoryIn(BaseModel):
-    name: str
-    icon: str = "tag"
-    tax_rate: float = Field(ge=0, le=1)
-    merchant_keywords: List[str] = Field(default_factory=list)
-    rep_increment: float = Field(default=0.05, ge=0, le=1)
-    max_tax_rate: float = Field(default=0.50, ge=0, le=1)
-    daily_cap_amount: float = Field(default=10.0, ge=0)
-
-
-class CategoryOut(CategoryIn):
-    id: str
-
-
-class BucketIn(BaseModel):
-    name: str
-    target_amount: float = Field(ge=0)
-    image_key: str = "travel"
-    is_default: bool = False
-
-
-class BucketOut(BaseModel):
-    id: str
-    name: str
-    target_amount: float
-    saved_amount: float
-    image_key: str
-    is_default: bool
-
-
-class LinkedAccountIn(BaseModel):
-    provider: Literal["revolut", "spuerkeess"]
-    access_token: Optional[str] = None
-
-
-class LinkedAccountOut(BaseModel):
-    id: str
-    provider: str
-    is_active: bool
-    linked_at: datetime
-    connected_at: Optional[datetime] = None
-    consent_url: Optional[str] = None
-
-
-class SavingsDestinationIn(BaseModel):
-    type: Literal["external_iban", "revolut_pocket"]
-    label: str = Field(min_length=1, max_length=80)
-    identifier: str = Field(min_length=1, max_length=64)
-    currency: Literal["EUR", "USD", "GBP"]
-    is_default: bool = False
-
-
-class SavingsDestinationOut(BaseModel):
-    id: str
-    type: str
-    label: str
-    identifier: str
-    currency: str
-    is_default: bool
-    is_active: bool
-    created_at: datetime
-
-
-class ActivityRow(BaseModel):
-    raw_txn_id: str
-    merchant_name: str
-    amount: float
-    currency: str
-    transacted_at: datetime
-    category_id: Optional[str] = None
-    category_name: Optional[str] = None
-    tax_event_id: Optional[str] = None
-    tax_amount: float = 0.0
-    tax_rate_applied: float = 0.0
-    repetition_number: int = 0
-    status: str
-    created_at: Optional[datetime] = None
-    can_override: bool = False
-    profile_applied: Optional[str] = None
-    # Source / destination / transfer
-    source_account_id: Optional[str] = None
-    source_label: Optional[str] = None
-    source_type: Optional[str] = None
-    source_currency: Optional[str] = None
-    destination_id: Optional[str] = None
-    destination_label: Optional[str] = None
-    destination_currency: Optional[str] = None
-    transfer_status: Optional[str] = None
-    transfer_provider_ref: Optional[str] = None
-    requires_review: bool = False
-
-
-class SettingsIn(BaseModel):
-    profile_type: Optional[Literal["balanced", "aggressive", "ethical", "mindful", "savings_beast"]] = None
-    transfer_frequency: Optional[Literal["instant", "daily", "weekly"]] = None
-    pause_all_taxes: Optional[bool] = None
-    apply_ethical_penalty_all_profiles: Optional[bool] = None
-
-
-class SettingsOut(BaseModel):
-    profile_type: str
-    transfer_frequency: str
-    pause_all_taxes: bool
-    transfer_last_run_at: Optional[datetime] = None
-    apply_ethical_penalty_all_profiles: bool
-
-class ResolveReviewIn(BaseModel):
-    action: Literal["approve", "change_destination"]
-    destination_id: Optional[str] = None
-
-class PushTokenIn(BaseModel):
-    token: str
-
-
 # ---------- Helpers ----------
 def hash_password(p: str) -> str:
     return pwd_context.hash(p)
@@ -237,12 +122,6 @@ def verify_password(p: str, h: str) -> bool:
 def create_token(uid: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     return jwt.encode({"sub": uid, "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
-
-
-def ensure_aware(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
 
 
 async def current_user(creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer)):
@@ -258,90 +137,12 @@ async def current_user(creds: Optional[HTTPAuthorizationCredentials] = Depends(b
         raise HTTPException(401, "User not found")
     return user
 
-
-def to_user_out(u: dict) -> UserOut:
-    return UserOut(
-        id=u["id"], email=u["email"], name=u["name"],
-        currency=u["currency"], default_bucket_id=u.get("default_bucket_id"),
-    )
-
-
-def to_cat_out(r: dict) -> CategoryOut:
-    return CategoryOut(
-        id=r["id"], name=r["name"], icon=r.get("icon", "tag"),
-        tax_rate=r["tax_rate"],
-        merchant_keywords=r.get("merchant_keywords", []),
-        rep_increment=r.get("rep_increment", 0.05),
-        max_tax_rate=r.get("max_tax_rate", 0.50),
-        daily_cap_amount=r.get("daily_cap_amount", 10.0),
-    )
-
-
-def to_bucket_out(b: dict) -> BucketOut:
-    return BucketOut(
-        id=b["id"], name=b["name"], target_amount=b["target_amount"],
-        saved_amount=b.get("saved_amount", 0.0), image_key=b.get("image_key", "travel"),
-        is_default=b.get("is_default", False),
-    )
-
-
-def to_dest_out(d: dict) -> SavingsDestinationOut:
-    return SavingsDestinationOut(
-        id=d["id"], type=d["type"], label=d["label"],
-        identifier=d["identifier"], currency=d["currency"],
-        is_default=bool(d.get("is_default", False)),
-        is_active=bool(d.get("is_active", True)),
-        created_at=ensure_aware(d["created_at"]),
-    )
-
-
-def to_settings_out(u: dict) -> SettingsOut:
-    last = u.get("transfer_last_run_at")
-    return SettingsOut(
-        profile_type=u.get("profile_type", "balanced"),
-        transfer_frequency=u.get("transfer_frequency", "instant"),
-        pause_all_taxes=bool(u.get("pause_all_taxes", False)),
-        apply_ethical_penalty_all_profiles=u.get("apply_ethical_penalty_all_profiles", False),
-        transfer_last_run_at=ensure_aware(last) if last else None,
-    )
-
 def send_push(token: str, title: str, body: str):
     requests.post(EXPO_PUSH_URL, json={
         "to": token,
         "title": title,
         "body": body,
     })
-
-DEFAULT_CATEGORIES = [
-    {"name": "Coffee", "icon": "coffee", "tax_rate": 0.25,
-     "merchant_keywords": ["starbucks", "coffee", "café", "costa", "pret", "tim hortons"],
-     "rep_increment": 0.05, "max_tax_rate": 0.50, "daily_cap_amount": 10.0},
-    {"name": "Fast Food", "icon": "utensils", "tax_rate": 0.30,
-     "merchant_keywords": ["mcdonalds", "burger king", "kfc", "subway", "five guys",
-                           "uber eats", "deliveroo", "just eat"],
-     "rep_increment": 0.05, "max_tax_rate": 0.50, "daily_cap_amount": 15.0},
-    {"name": "Groceries", "icon": "shopping-cart", "tax_rate": 0.05,
-     "merchant_keywords": ["carrefour", "aldi", "lidl", "delhaize", "colruyt",
-                           "cactus", "match"],
-     "rep_increment": 0.02, "max_tax_rate": 0.20, "daily_cap_amount": 20.0},
-    {"name": "Clothes", "icon": "shopping-bag", "tax_rate": 0.15,
-     "merchant_keywords": ["zara", "h&m", "primark", "uniqlo", "asos", "mango"],
-     "rep_increment": 0.05, "max_tax_rate": 0.50, "daily_cap_amount": 25.0},
-    {"name": "Entertainment", "icon": "film", "tax_rate": 0.20,
-     "merchant_keywords": ["netflix", "spotify", "steam", "cinema", "ticketmaster"],
-     "rep_increment": 0.05, "max_tax_rate": 0.50, "daily_cap_amount": 15.0},
-    {"name": "Transport", "icon": "car", "tax_rate": 0.10,
-     "merchant_keywords": ["uber", "taxi", "stib", "tec", "de lijn", "parking"],
-     "rep_increment": 0.03, "max_tax_rate": 0.30, "daily_cap_amount": 10.0},
-    {"name": "Other", "icon": "tag", "tax_rate": 0.10,
-     "merchant_keywords": [],
-     "rep_increment": 0.05, "max_tax_rate": 0.50, "daily_cap_amount": 10.0},
-    {"name": "Ethical Penalty", "icon": "alert-triangle", "tax_rate": 0.35,
-     "merchant_keywords": ["amazon", "mcdonalds", "kfc", "primark", "h&m",
-                           "coca-cola", "pepsi", "nestlé", "monsanto", "shein"],
-     "rep_increment": 0.05, "max_tax_rate": 0.70, "daily_cap_amount": 20.0},
-]
-
 
 async def seed_user_defaults(user_id: str, currency: str) -> str:
     now = datetime.now(timezone.utc)
@@ -926,36 +727,6 @@ def _parse_revolut(items: list) -> list:
             "source_label": source_label,
             "source_type": source_type,
             "source_currency": currency,
-        })
-    return out
-
-
-def _stub_spuerkeess(connected_at: datetime, fixed_time: datetime = None) -> list:
-    """Stub generates transactions *after* connected_at — no retroactive taxation."""
-    now = fixed_time if fixed_time else datetime.now(timezone.utc)
-    day_key = now.strftime("%Y%m%d%H%M%S")
-    
-    samples = [
-        ("Starbucks Luxembourg-Ville", 4.80, 5, "spk_main", "Spuerkeess · Checking", "account"),
-        ("Cactus Belair", 38.20, 90, "spk_main", "Spuerkeess · Checking", "account"),
-        ("McDonalds Cloche d'Or", 9.50, 120, "spk_main", "Spuerkeess · Checking", "account"),
-        ("Uber Trip", 14.20, 180, "spk_card_1234", "Spuerkeess · Card *1234", "card"),
-        ("Spotify AB", 9.99, 240, "spk_main", "Spuerkeess · Checking", "account"),
-        ("Zara Auchan", 64.90, 300, "spk_card_1234", "Spuerkeess · Card *1234", "card"),
-        ("Costa Coffee Gare", 5.10, 30, "spk_main", "Spuerkeess · Checking", "account"),
-    ]
-    out = []
-    for i, (m, amt, mins, sid, slabel, stype) in enumerate(samples):
-        out.append({
-            "provider_txn_id": f"spk_{i}_{day_key}",
-            "merchant_name": m,
-            "amount": amt,
-            "currency": "EUR",
-            "transacted_at": ensure_aware(connected_at) + timedelta(minutes=mins),
-            "source_account_id": sid,
-            "source_label": slabel,
-            "source_type": stype,
-            "source_currency": "EUR",
         })
     return out
 
