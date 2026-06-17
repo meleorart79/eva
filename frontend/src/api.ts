@@ -4,11 +4,13 @@ const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 const TOKEN_KEY = "eva_token";
 
 export type User = {
-  id: string;
-  email: string;
-  name: string;
-  currency: string;
-  default_bucket_id?: string | null;
+    id: string;
+    email: string;
+    name: string;
+    currency: string;
+    default_bucket_id?: string | null;
+    profile_type?: "balanced" | "aggressive" | "ethical" | "mindful" | "savings_beast" | string;
+    apply_ethical_penalty_all_profiles?: boolean;
 };
 
 export type Category = {
@@ -142,12 +144,12 @@ async function req<T>(path: string, opts: RequestInit = {}, auth = true): Promis
   }
   const res = await fetch(`${BASE}/api${path}`, { ...opts, headers });
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
-  if (!res.ok) {
-    const msg = (data && (data.detail || data.message)) || `Request failed (${res.status})`;
-    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+  let data = null;
+  try {
+      data = text ? JSON.parse(text) : null;
+  } catch {
+    throw new Error(`Server returned non-JSON (status ${res.status}): ${text.slice(0, 200)}`);
   }
-  return data as T;
 }
 
 export const api = {

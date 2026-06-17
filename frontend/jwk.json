@@ -1,0 +1,11 @@
+{
+  "keys": [
+    {
+      "kty": "RSA",
+      "n": "lmN3XpyQasBjGGkRMAq6JnPNXZHpK2oYOdGeZrUY2C81st6qTDs_frbIkrYupoDsRKt0tPjNbKW9xXIM4mQX-Yw_cZzPUYpkii6u_IsVDsR50Y0aIuA7zwhzIRW403KKSxcZT4R2JGBrryZw4llK25HCtaa3YpM8pbbP84FmnJxf5wAHr9JEdcy6FUcdsG10qOqzH8mXrepbQr_WRZpqtEvC1HljlLWVCn2fG9Bfvk6oBoHmLC7NaA-Z8gM6RTfWsv3inU20-8AgsdFmaQgiirtO_MSj7dkTG_7tvmiV6fqvwPOXiwtX8xxgOpsqAi46EHRxXO3N9AnZjZnKoYHt3w",
+      "e": "AQAB",
+      "use": "sig",
+      "kid": "revolut-sandbox-key-1"
+    }
+  ]
+}

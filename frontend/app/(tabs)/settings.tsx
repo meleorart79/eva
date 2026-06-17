@@ -16,6 +16,7 @@ import { Feather } from "@expo/vector-icons";
 
 import { api, LinkedAccount, Settings } from "@/src/api";
 import { colors, fonts, radius, spacing, type } from "@/src/theme";
+import { TouchableOpacity } from "react-native-gesture-handler";
 
 type ProfileKey = Settings["profile_type"];
 type FreqKey = Settings["transfer_frequency"];
@@ -250,10 +251,12 @@ export default function SettingsScreen() {
                                     <Text>{f.sub}</Text>
                                 </Pressable>
                             ))}
-                            {settings.transfer_last_run_at ? (
+                                {settings.transfer_last_run_at ? (
+                                <Pressable>
                                 <Text style={styles.lastRunText}>
                                     Last run: {new Date(settings.transfer_last_run_at).toLocaleString()}
-                                </Text>
+                                    </Text>
+                                </Pressable>
                             ) : null}
                         </View>
 

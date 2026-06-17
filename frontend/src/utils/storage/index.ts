@@ -55,6 +55,7 @@ export class Storage extends StorageBase {
       const raw = await SecureStore.getItemAsync(key);
       return this.retrieve(raw, fallback);
     } catch (e) {
+      console.error("SecureStore secureGet failed for key:", key, e);
       this.warn("secureGet", key, e);
       return fallback;
     }
@@ -68,6 +69,7 @@ export class Storage extends StorageBase {
       await SecureStore.setItemAsync(key, JSON.stringify(value));
       return true;
     } catch (e) {
+      console.error("SecureStore secureSet failed for key:", key, e);
       this.warn("secureSet", key, e);
       return false;
     }
@@ -78,6 +80,7 @@ export class Storage extends StorageBase {
       await SecureStore.deleteItemAsync(key);
       return true;
     } catch (e) {
+      console.error("SecureStore secureRemove failed for key:", key, e);
       this.warn("secureRemove", key, e);
       return false;
     }

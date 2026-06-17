@@ -594,7 +594,7 @@ async def delete_bucket(bid: str, user=Depends(current_user)):
         raise HTTPException(404, "Bucket not found")
     if b.get("is_default"):
         raise HTTPException(400, "Cannot delete the default bucket")
-    await db.buckets.delete_one({"id": bid, "user_id": user["id"]})
+        await db.buckets.delete_one({"id": bid, "user_id": user["id"]})
     return {"ok": True}
 
 
@@ -930,11 +930,12 @@ def _parse_revolut(items: list) -> list:
     return out
 
 
-def _stub_spuerkeess(connected_at: datetime) -> list:
+def _stub_spuerkeess(connected_at: datetime, fixed_time: datetime = None) -> list:
     """Stub generates transactions *after* connected_at — no retroactive taxation."""
-    day_key = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    now = fixed_time if fixed_time else datetime.now(timezone.utc)
+    day_key = now.strftime("%Y%m%d%H%M%S")
+    
     samples = [
-        # (merchant, amount, minutes-after-connection, source_id, source_label, source_type)
         ("Starbucks Luxembourg-Ville", 4.80, 5, "spk_main", "Spuerkeess · Checking", "account"),
         ("Cactus Belair", 38.20, 90, "spk_main", "Spuerkeess · Checking", "account"),
         ("McDonalds Cloche d'Or", 9.50, 120, "spk_main", "Spuerkeess · Checking", "account"),
@@ -1042,15 +1043,19 @@ async def bank_sync(user=Depends(current_user)):
 
 
 # ---------- Tax engine ----------
-def _match_category(merchant: str, cats: list) -> Optional[dict]:
+def _match_category(merchant: str, cats: list, profile_type: str = "balanced", apply_ethical_penalty_all_profiles: bool = False) -> Optional[dict]:
     name = (merchant or "").lower()
-    ordered = sorted(cats, key=lambda c: 0 if c.get("name") == "Ethical Penalty" else 1)
+    is_ethical_mode = (profile_type == "ethical") or apply_ethical_penalty_all_profiles
+    if is_ethical_mode:
+        ordered = sorted(cats, key=lambda c: 0 if c.get("name") == "Ethical Penalty" else 1)
+    else:
+        ordered = sorted(cats, key=lambda c: 1 if c.get("name") == "Ethical Penalty" else 0)
+        
     for cat in ordered:
         for kw in cat.get("merchant_keywords") or []:
             if kw and kw.lower() in name:
                 return cat
     return None
-
 
 async def _execute_transfers(user: dict, trigger: str = "manual") -> List[dict]:
     """
@@ -1173,6 +1178,7 @@ async def tax_process(user=Depends(current_user)):
     cats = await db.categories.find({"user_id": user["id"]}, {"_id": 0}).to_list(200)
     default_bucket_id = user.get("default_bucket_id")
     profile = user.get("profile_type", "balanced")
+    apply_ethical = user.get("apply_ethical_penalty_all_profiles", False)
     destination = await _get_default_destination(user["id"])
 
     taxed = 0
@@ -1182,7 +1188,12 @@ async def tax_process(user=Depends(current_user)):
     taxed_details = []
 
     for tx in pending:
-        cat = _match_category(tx["merchant_name"], cats)
+        cat = _match_category(
+            tx["merchant_name"], 
+            cats, 
+            profile_type=profile, 
+            apply_ethical_penalty_all_profiles=apply_ethical
+        )
         if not cat:
             await db.raw_transactions.update_one(
                 {"id": tx["id"]}, {"$set": {"status": "unmatched", "matched_category_id": None}},
@@ -1291,7 +1302,11 @@ async def tax_process(user=Depends(current_user)):
         if default_bucket_id:
             await db.buckets.update_one(
                 {"id": default_bucket_id, "user_id": user["id"]},
-                {"$inc": {"saved_amount": tax_amount}},
+                [{"$set": {
+                    "saved_amount": {
+                        "$max": [0.0, {"$subtract": ["$saved_amount", float(tax_amount)]}]
+                    }
+                }}]
             )
         await db.raw_transactions.update_one(
             {"id": tx["id"]}, {"$set": {"status": "taxed", "matched_category_id": cat["id"]}},
@@ -1338,14 +1353,16 @@ async def tax_override(event_id: str, user=Depends(current_user)):
         {"$set": {"status": "overridden", "override_reason": "intentional"}},
     )
     if ev.get("bucket_id"):
+        bucket_id = ev["bucket_id"]
+        tax_amount = float(ev.get("tax_amount", 0))
         await db.buckets.update_one(
-        {"id": ev["bucket_id"], "user_id": user["id"]},
-        [{"$set": {
-            "saved_amount": {
-                "$max": [0.0, {"$subtract": ["$saved_amount", float(ev["tax_amount"])]}]
-            }
-        }}],
-    )
+            {"id": bucket_id, "user_id": user["id"]},
+            [{"$set": {
+                "saved_amount": {
+                    "$max": [0.0, {"$subtract": ["$saved_amount", tax_amount]}]
+                }
+            }}]
+        )
     return {"ok": True}
 
 
@@ -1612,7 +1629,7 @@ def e_get_merchant(event: dict) -> Optional[str]:
 
 
 @api.get("/reports/monthly")
-async def reports_monthly(year: int, month: int, user=Depends(current_user)):
+async def reports_monthly(user: dict, year: int, month: int):
     if month < 1 or month > 12:
         raise HTTPException(400, "month must be 1..12")
     data = await _monthly_data(user, year, month)

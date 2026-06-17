@@ -153,7 +153,7 @@ export default function Categories() {
                 }}
             >
                 <Text style={styles.helper}>
-                    Set how much "tax" each category contributes to your savings.
+                    Set how much tax each category contributes to your savings.
                     Tap a row to edit.
                 </Text>
 
@@ -174,7 +174,7 @@ export default function Categories() {
                         ) : (
                             <Text style={styles.testResultNone}>No category would match — unmatched.</Text>
                         )
-                    )}
+                    ) : null}
                 </View>
 
                 {items.map((c) => (
