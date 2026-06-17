@@ -1,6 +1,6 @@
 import { storage } from "./utils/storage";
 
-const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
+const BASE = (process.env.EXPO_PUBLIC_BACKEND_URL || "").replace(/\/+$/, "");
 const TOKEN_KEY = "eva_token";
 
 export type User = {
